@@ -1,0 +1,114 @@
+diff -Naur openvdb-8.0.0/openvdb/openvdb/CMakeLists.txt openvdb/openvdb/openvdb/CMakeLists.txt
+--- openvdb-8.0.0/openvdb/openvdb/CMakeLists.txt	2020-12-24 10:13:14 -0700
++++ openvdb/openvdb/openvdb/CMakeLists.txt	2021-02-05 11:18:33 -0700
+@@ -146,6 +148,7 @@
+         Boost::disable_autolinking  # add -DBOOST_ALL_NO_LIB
+       )
+   endif()
++  add_definitions(-D__TBB_NO_IMPLICIT_LINKAGE -DOPENVDB_OPENEXR_STATICLIB)
+ endif()
+ 
+ if(USE_EXR)
+@@ -379,7 +382,12 @@
+ # imported targets.
+ 
+ if(OPENVDB_CORE_SHARED)
+-  add_library(openvdb_shared SHARED ${OPENVDB_LIBRARY_SOURCE_FILES})
++  if(WIN32)
++    configure_file(version.rc.in ${CMAKE_CURRENT_BINARY_DIR}/version.rc @ONLY)
++    add_library(openvdb_shared SHARED ${OPENVDB_LIBRARY_SOURCE_FILES} ${CMAKE_CURRENT_BINARY_DIR}/version.rc)
++  else()
++    add_library(openvdb_shared SHARED ${OPENVDB_LIBRARY_SOURCE_FILES})
++  endif()
+ endif()
+ 
+ if(OPENVDB_CORE_STATIC)
+diff -Naur openvdb-8.0.0/openvdb/openvdb/version.rc.in openvdb/openvdb/openvdb/version.rc.in
+--- openvdb-8.0.0/openvdb/openvdb/version.rc.in	1969-12-31 17:00:00 -0700
++++ openvdb/openvdb/openvdb/version.rc.in	2021-02-05 11:18:33 -0700
+@@ -0,0 +1,48 @@
++#include <winver.h>
++
++#define VER_FILEVERSION             @OpenVDB_MAJOR_VERSION@,@OpenVDB_MINOR_VERSION@,@OpenVDB_PATCH_VERSION@,0
++#define VER_FILEVERSION_STR         "@OpenVDB_MAJOR_VERSION@.@OpenVDB_MINOR_VERSION@.@OpenVDB_PATCH_VERSION@.0\0"
++
++#define VER_PRODUCTVERSION          @OpenVDB_MAJOR_VERSION@,@OpenVDB_MINOR_VERSION@,@OpenVDB_PATCH_VERSION@,0
++#define VER_PRODUCTVERSION_STR      "@OpenVDB_MAJOR_VERSION@.@OpenVDB_MINOR_VERSION@\0"
++
++#ifndef DEBUG
++#define VER_DEBUG                   0
++#else
++#define VER_DEBUG                   VS_FF_DEBUG
++#endif
++
++VS_VERSION_INFO VERSIONINFO
++FILEVERSION     VER_FILEVERSION
++PRODUCTVERSION  VER_PRODUCTVERSION
++FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
++FILEFLAGS       (VER_DEBUG)
++FILEOS          VOS__WINDOWS32
++FILETYPE        VFT_DLL
++FILESUBTYPE     VFT2_UNKNOWN
++BEGIN
++    BLOCK "StringFileInfo"
++    BEGIN
++        BLOCK "040904E4"
++        BEGIN
++            VALUE "FileDescription",  "OpenVDB"
++            VALUE "FileVersion",      VER_FILEVERSION_STR
++            VALUE "InternalName",     "OpenVDB"
++            VALUE "ProductName",      "OpenVDB"
++            VALUE "ProductVersion",   VER_PRODUCTVERSION_STR
++        END
++    END
++
++    BLOCK "VarFileInfo"
++    BEGIN
++        /* The following line should only be modified for localized versions.     */
++        /* It consists of any number of WORD,WORD pairs, with each pair           */
++        /* describing a language,codepage combination supported by the file.      */
++        /*                                                                        */
++        /* For example, a file might have values "0x409,1252" indicating that it  */
++        /* supports English language (0x409) in the Windows ANSI codepage (1252). */
++
++        VALUE "Translation", 0x409, 1252
++
++    END
++END
+diff -Naur orig/openvdb/openvdb/tree/ValueAccessor.h openvdb/openvdb/openvdb/tree/ValueAccessor.h
+--- orig/openvdb/openvdb/tree/ValueAccessor.h	2022-11-02 13:58:26 -0600
++++ openvdb/openvdb/openvdb/tree/ValueAccessor.h	2022-11-02 18:55:09 -0600
+@@ -872,7 +872,10 @@
+     using LeafNodeType = typename NodeType::LeafNodeType;
+     using CoordLimits = std::numeric_limits<Int32>;
+ 
+-    static_assert(std::is_same<NodeType, LeafNodeType>::value);
++    // Blender: Technically not an issue in OpenVDB, but USD 21.11 still builds 
++    // as C++14 which does not support terse asserts yet. Add a message to 
++    // explicitly select the C++14 supported static assert.
++    static_assert(std::is_same<NodeType, LeafNodeType>::value, "cache item node type is not leaf node type");
+ 
+     CacheItem(TreeCacheT& parent)
+         : mParent(&parent)
+diff --git a/nanovdb/nanovdb/NanoVDB.h b/nanovdb/nanovdb/NanoVDB.h
+index f7fc304..fde5c47 100644
+--- a/nanovdb/nanovdb/NanoVDB.h
++++ b/nanovdb/nanovdb/NanoVDB.h
+@@ -1877,7 +1877,7 @@ __hostdev__ static inline uint32_t FindLowestOn(uint64_t v)
+ {
+     NANOVDB_ASSERT(v);
+ #if (defined(__CUDA_ARCH__) || defined(__HIP__)) && defined(NANOVDB_USE_INTRINSICS)
+-    return __ffsll(v);
++    return __ffsll(static_cast<unsigned long long int>(v));
+ #elif defined(_MSC_VER) && defined(NANOVDB_USE_INTRINSICS)
+     unsigned long index;
+     _BitScanForward64(&index, v);
+@@ -2592,7 +2592,7 @@ public:
+     ///
+     /// @note This method is only defined for IndexGrid = NanoGrid<ValueIndex>
+     template <typename T = BuildType>
+-    __hostdev__ typename enable_if<is_same<T, ValueIndex>::value, uint64_t>::type valueCount() const {return DataType::mData1;}
++    __hostdev__ typename enable_if<is_same<T, ValueIndex>::value, const uint64_t&>::type valueCount() const {return DataType::mData1;}
+ 
+     /// @brief Return a const reference to the tree
+     __hostdev__ const TreeT& tree() const { return *reinterpret_cast<const TreeT*>(this->treePtr()); }

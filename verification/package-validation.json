@@ -1,0 +1,125 @@
+{
+  "config": {
+    "mode": "config",
+    "passed": true,
+    "checks": [
+      "Native Blender 3.6 config path",
+      "Existing preferences available",
+      "Native preferences read successfully",
+      "Reading preferences did not modify config files",
+      "Packaged local config directory absent",
+      "Native user add-on path discoverable"
+    ],
+    "metrics": {}
+  },
+  "render": {
+    "mode": "render",
+    "passed": true,
+    "checks": [
+      "SSGI RNA available",
+      "Light linking RNA available",
+      "Cycles not compiled",
+      "01-unlinked finite and bounded",
+      "01-repeat-0 finite and bounded",
+      "01-repeat-1 finite and bounded",
+      "01-repeat-2 finite and bounded",
+      "Repeated SSGI renders remain stable",
+      "02-included finite and bounded",
+      "Include all matches unlinked within measured SSGI noise",
+      "03-excluded finite and bounded",
+      "04-light-off finite and bounded",
+      "Exclude all equals light off with SSRT",
+      "Light contributes to baseline",
+      "05-shadow-excluded finite and bounded",
+      "06-shadows-off finite and bounded",
+      "Exclude blockers matches shadows off",
+      "Shadow exclusion has visible effect",
+      "07-fog-excluded finite and bounded",
+      "08-volume-light-off finite and bounded",
+      "Volume exclusion matches volume light off",
+      "Ctrl+L shares receiver collection",
+      "09-selective finite and bounded",
+      "Selective linking changes render",
+      "10-history-switch-0 finite and bounded",
+      "10-history-switch-1 finite and bounded",
+      "10-history-switch-2 finite and bounded",
+      "10-history-switch-3 finite and bounded",
+      "10-history-switch-4 finite and bounded",
+      "10-history-switch-5 finite and bounded",
+      "10-history-switch-6 finite and bounded",
+      "10-history-switch-7 finite and bounded",
+      "10-history-switch-8 finite and bounded",
+      "10-history-switch-9 finite and bounded",
+      "10-history-switch-10 finite and bounded",
+      "10-history-switch-11 finite and bounded",
+      "11-restored finite and bounded",
+      "SSGI survives frame resolution and enable switches",
+      "12-diffuse-gi-off finite and bounded",
+      "Diffuse GI remains effective after fix"
+    ],
+    "metrics": {
+      "repeat_noise": {
+        "maximum": 0.017183154821395874,
+        "mean": 0.000510991143528372
+      },
+      "Include all matches unlinked within measured SSGI noise": {
+        "maximum": 0.016490280628204346,
+        "mean": 0.0005212842370383441
+      },
+      "Exclude all equals light off with SSRT": {
+        "maximum": 0.0,
+        "mean": 0.0
+      },
+      "Exclude blockers matches shadows off": {
+        "maximum": 0.011390089988708496,
+        "mean": 0.00023816764587536454
+      },
+      "Volume exclusion matches volume light off": {
+        "maximum": 0.00979536771774292,
+        "mean": 0.0001784364867489785
+      },
+      "SSGI survives frame resolution and enable switches": {
+        "maximum": 0.019321411848068237,
+        "mean": 0.0005048776511102915
+      }
+    }
+  },
+  "reopen": {
+    "mode": "reopen",
+    "passed": true,
+    "checks": [
+      "Light collection survives save/reopen",
+      "Shared light collection survives save/reopen",
+      "SSRT setting survives save/reopen"
+    ],
+    "metrics": {}
+  },
+  "source_revision": "112f061a999ba8cbd021b59e09ce1db36762d787",
+  "color_management": "Official Blender 3.6.2; Standard display transform for render comparisons",
+  "official_color_files": {
+    "official_blender_revision": "e53e55951e7a81572d82d25f5d190fe5b130bdf3",
+    "all_files_match_official_source": true,
+    "files_sha256": {
+      "config.ocio": "41f3915634fa0377a5733504d373dde8b35070cf90582f993c159460298b5cb0",
+      "filmic/filmic_desat65cube.spi3d": "2c3dcccb5db817156737691924ade43d8daad16282cc6be3a9e242744002a0bb",
+      "filmic/filmic_false_color.spi3d": "98e1c0cf04f54dbe75526089e80308e735864228290648f64f68a79b3457ae60",
+      "filmic/filmic_to_0-35_1-30.spi1d": "0ea26b926904d395085968e400c187afc3ca6bd20365f086520201b024504565",
+      "filmic/filmic_to_0-48_1-09.spi1d": "c165ededf8613a4bbaeb4b86923e6c0750e85c2d0e503d5813440d2d05490ae9",
+      "filmic/filmic_to_0-60_1-04.spi1d": "d6eb719914486271fd74a81188b17e8fe2308f163d311311eae30bd8328cb7e9",
+      "filmic/filmic_to_0-70_1-03.spi1d": "ff0e4cd3745c3d6857c163ee33caa2c796d6c5bddd91859e4646518110bf5b13",
+      "filmic/filmic_to_0-85_1-011.spi1d": "49611d68ea8d7fb454266ad239ab91213f05d41affc32ab552d1097d4b3028cd",
+      "filmic/filmic_to_0.99_1-0075.spi1d": "b75f1de373e704c757217170c5245801e241014ced7d664b213e02b791674c27",
+      "filmic/filmic_to_1.20_1-00.spi1d": "9bdef6f44239b090482cc3570895167432a59e28fb49a8b4288d75f29f912a9e",
+      "luts/dci_xyz.spi1d": "37d000c9f16354bb66fd047f5b7c7482c23c261a943ba5ef9835ae19f0a9605a",
+      "luts/lg10.spi1d": "1b76ef0a8604c003cb851676a49014dba9910dee0ab3e96ac666cc95159599a5",
+      "luts/rec709.spi1d": "98f5b218666c1e9c227b28ecb1ecf1aa3f9ba64ceb8ce9c02310befd399a63f9",
+      "luts/srgb.spi1d": "0928cc0b9f3c42b8101c67b701dcc4ba002c8a38060f0569522cac1eb7f0ce04",
+      "luts/srgb_inv.spi1d": "82be644be7667c32ac656006c1c430b73e4f9765892f9a0bf6ead5961e179806",
+      "luts/srgb_to_xyz.spimtx": "625c0adfaf9e314e3bfd852d7c2188245f0caac799035acb398ef6a6f82729ff",
+      "luts/vd16.spi1d": "3ddcaa9f1966344eb0ec00e41e65286e77db05e0ce2bde4f22daf115df398889",
+      "luts/xyz_D65_to_E.spimtx": "2235ea90d0d81eca24766747001e8ebba21f418c6d7e2b6aef20fb790deb2ef8",
+      "luts/xyz_to_aces.spimtx": "4af121671257710ceb9cb9a18c58faed8467f5cea51321badc645a718eafa6fc"
+    }
+  },
+  "native_configuration_files_unchanged": true
+}

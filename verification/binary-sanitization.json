@@ -1,0 +1,10 @@
+{
+  "replacement_count": 968,
+  "executable_sections_unchanged": true,
+  "executable_section_sha256": {
+    ".text": "0d8861edfae026ffc7fb0c9d870c77550ccaeb64fbeb8ed8717fb46573069e3b"
+  },
+  "file_size_unchanged": true,
+  "before_sha256": "c98aa8686f009dd9fa65b03820ae1681954eee665e4c57025dbd8f907bc30a20",
+  "after_sha256": "e2f00af9830357fa9940ab854a5d4a521231c3c7bf39a5ab86a7e1a4aa92b0e2"
+}

@@ -1,0 +1,16 @@
+{
+  "application": {
+    "passed": true,
+    "file_count": 5194,
+    "bytes": 469143729,
+    "findings": [],
+    "scope": "known private path markers, profile/cache/debug files, token patterns; upstream authored assets retained"
+  },
+  "source": {
+    "passed": true,
+    "file_count": 14434,
+    "bytes": 266758410,
+    "findings": [],
+    "scope": "known private path markers, profile/cache/debug files, token patterns; upstream authored assets retained"
+  }
+}

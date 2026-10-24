@@ -1,0 +1,3033 @@
+From 931de149733bb8e471bfe000c5159bcea79406e8 Mon Sep 17 00:00:00 2001
+From: illusion0001 <37698908+illusion0001@users.noreply.github.com>
+Date: Tue, 14 Nov 2023 11:32:11 -0600
+Subject: [PATCH] SSGI Native 1.17a Addon Patch from `0451` (Archival Purposes)
+
+https://blenderartists.org/t/screen-space-global-illumination-for-eevee/1248355
+https://n0451.gumroad.com/l/PgyXc
+---
+ scripts/startup/bl_ui/properties_render.py    |  76 +-
+ .../blenloader/intern/versioning_300.cc       |  32 +
+ source/blender/draw/CMakeLists.txt            |   5 +
+ .../draw/engines/eevee/eevee_private.h        |  39 ++
+ .../blender/draw/engines/eevee/eevee_render.c |   4 +-
+ .../draw/engines/eevee/eevee_renderpasses.c   |   2 +-
+ .../engines/eevee/eevee_screen_raytrace.c     | 133 +++-
+ .../draw/engines/eevee/eevee_shaders.cc       |  46 ++
+ .../eevee/shaders/ambient_occlusion_lib.glsl  |  15 +
+ .../shaders/closure_eval_diffuse_lib.glsl     |   8 +-
+ .../eevee/shaders/closure_eval_lib.glsl       |   5 +-
+ .../shaders/closure_eval_surface_lib.glsl     |  29 +
+ .../eevee/shaders/closure_type_lib.glsl       |   8 +-
+ .../eevee/shaders/common_uniforms_lib.glsl    |  22 +
+ .../eevee/shaders/effect_reflection_lib.glsl  |  31 +
+ .../shaders/effect_ssgi_filter_frag.glsl      | 203 ++++++
+ .../shaders/effect_ssgi_filter_sec_frag.glsl  | 193 ++++++
+ .../shaders/effect_ssgi_resolve_frag.glsl     | 275 ++++++++
+ .../eevee/shaders/effect_ssgi_trace_frag.glsl | 107 +++
+ .../infos/eevee_legacy_effects_info.hh        |  88 +++
+ .../infos/eevee_legacy_material_info.hh       |   3 +-
+ .../infos/engine_eevee_legacy_shared.h        |  43 ++
+ .../engines/eevee/shaders/lightprobe_lib.glsl | 649 ++++++++++--------
+ .../engines/eevee/shaders/raytrace_lib.glsl   |   1 +
+ .../engines/eevee/shaders/surface_frag.glsl   |   2 +
+ .../shaders/eevee_nodetree_lib.glsl           |   1 +
+ .../shaders/common_colorpacking_lib.glsl      |  71 ++
+ ...gpu_shader_material_ambient_occlusion.glsl |  18 +-
+ .../material/gpu_shader_material_camera.glsl  |   8 +
+ source/blender/makesdna/DNA_scene_defaults.h  |  21 +
+ source/blender/makesdna/DNA_scene_types.h     |  24 +-
+ source/blender/makesrna/intern/rna_scene.c    | 136 ++++
+ .../nodes/node_shader_ambient_occlusion.cc    |   2 +
+ .../nodes/shader/nodes/node_shader_camera.cc  |   1 +
+ 34 files changed, 1988 insertions(+), 313 deletions(-)
+ create mode 100644 source/blender/draw/engines/eevee/shaders/effect_ssgi_filter_frag.glsl
+ create mode 100644 source/blender/draw/engines/eevee/shaders/effect_ssgi_filter_sec_frag.glsl
+ create mode 100644 source/blender/draw/engines/eevee/shaders/effect_ssgi_resolve_frag.glsl
+ create mode 100644 source/blender/draw/engines/eevee/shaders/effect_ssgi_trace_frag.glsl
+ create mode 100644 source/blender/draw/intern/shaders/common_colorpacking_lib.glsl
+
+diff --git a/scripts/startup/bl_ui/properties_render.py b/scripts/startup/bl_ui/properties_render.py
+index bf3c322f..d5b3377a 100644
+--- a/scripts/startup/bl_ui/properties_render.py
++++ b/scripts/startup/bl_ui/properties_render.py
+@@ -405,7 +405,7 @@ class RENDER_PT_eevee_subsurface_scattering(RenderButtonsPanel, Panel):
+ 
+ 
+ class RENDER_PT_eevee_screen_space_reflections(RenderButtonsPanel, Panel):
+-    bl_label = "Screen Space Reflections"
++    bl_label = "Screen Space Ray Tracing 1.17a"
+     bl_options = {'DEFAULT_CLOSED'}
+     COMPAT_ENGINES = {'BLENDER_EEVEE'}
+ 
+@@ -428,13 +428,82 @@ class RENDER_PT_eevee_screen_space_reflections(RenderButtonsPanel, Panel):
+         col = layout.column()
+         col.active = props.use_ssr
+         col.prop(props, "use_ssr_refraction", text="Refraction")
+-        col.prop(props, "use_ssr_halfres")
++        #col.prop(props, "use_ssr_halfres")
++        col.prop(props, "ssr_border_fade")
++
++        col.label(text="Reflections:", text_ctxt="", translate=False, icon='NONE', icon_value=0)
++
+         col.prop(props, "ssr_quality")
+         col.prop(props, "ssr_max_roughness")
+         col.prop(props, "ssr_thickness")
+-        col.prop(props, "ssr_border_fade")
+         col.prop(props, "ssr_firefly_fac")
+ 
++        col.label(text="Diffuse:", text_ctxt="", translate=False, icon='NONE', icon_value=0)
++        col.prop(props, "ssr_diffuse_intensity")
++        col.prop(props, "ssr_diffuse_thickness")
++        col.prop(props, "ssr_diffuse_ao_limit")
++        col.prop(props, "ssr_diffuse_probe_trace")
++        col.prop(props, "ssr_diffuse_probe_intensity")
++
++        col.label(text="Denoiser:", text_ctxt="", translate=False, icon='NONE', icon_value=0)
++        col.prop(props, "ssr_diffuse_filter")
++        col.prop(props, "ssr_diffuse_fsamples")
++        col.prop(props, "ssr_diffuse_fsize")
++
++
++class RENDER_PT_eevee_screen_space_reflections_extra(RenderButtonsPanel, Panel):
++    bl_label = "Advanced Settings"
++    bl_parent_id = "RENDER_PT_eevee_screen_space_reflections"
++    bl_options = {'DEFAULT_CLOSED'}
++    COMPAT_ENGINES = {'BLENDER_EEVEE'}
++
++    @classmethod
++    def poll(cls, context):
++        return (context.engine in cls.COMPAT_ENGINES)
++
++    def draw_header(self, context):
++        scene = context.scene
++        props = scene.eevee
++
++    def draw(self, context):
++        layout = self.layout
++        layout.use_property_split = True
++
++        scene = context.scene
++        props = scene.eevee
++
++        col = layout.column()
++
++        col.label(text="Diffuse:", text_ctxt="", translate=False, icon='NONE', icon_value=0)
++        col.prop(props, "ssr_diffuse_intensity")
++        col.prop(props, "ssr_diffuse_quality")
++        col.prop(props, "ssr_diffuse_thickness")
++        col.prop(props, "ssr_diffuse_resolve_bias")
++        col.prop(props, "ssr_diffuse_clamp")
++        col.prop(props, "ssr_diffuse_ao")
++        col.prop(props, "ssr_diffuse_ao_limit")
++
++        col.label(text="Probe Tracing(WIP):", text_ctxt="", translate=False, icon='NONE', icon_value=0)
++        col.prop(props, "ssr_diffuse_probe_trace")
++        col.prop(props, "ssr_diffuse_probe_intensity")
++        col.prop(props, "ssr_diffuse_probe_clamp")
++
++        col.label(text="Denoiser:", text_ctxt="", translate=False, icon='NONE', icon_value=0)
++        col.prop(props, "ssr_diffuse_filter")
++        col.prop(props, "ssr_diffuse_fsamples")
++        col.prop(props, "ssr_diffuse_fsize")
++        col.prop(props, "ssr_diffuse_fnweight")
++        col.prop(props, "ssr_diffuse_fdweight")
++        col.prop(props, "ssr_diffuse_faoweight")
++
++        # col.label(text="Debug:", text_ctxt="", translate=False, icon='NONE', icon_value=0)
++        # col.prop(props, "ssr_diffuse_debug_a")
++        # col.prop(props, "ssr_diffuse_debug_b")
++        # col.prop(props, "ssr_diffuse_debug_c")
++        # col.prop(props, "ssr_diffuse_debug_d")
++        
++        #col.prop(props, "ssr_diffuse_versioning")
++        
+ 
+ class RENDER_PT_eevee_shadows(RenderButtonsPanel, Panel):
+     bl_label = "Shadows"
+@@ -893,6 +962,7 @@ classes = (
+     RENDER_PT_eevee_next_depth_of_field,
+     RENDER_PT_eevee_subsurface_scattering,
+     RENDER_PT_eevee_screen_space_reflections,
++    RENDER_PT_eevee_screen_space_reflections_extra,
+     RENDER_PT_eevee_motion_blur,
+     RENDER_PT_eevee_next_motion_blur,
+     RENDER_PT_motion_blur_curve,
+diff --git a/source/blender/blenloader/intern/versioning_300.cc b/source/blender/blenloader/intern/versioning_300.cc
+index 1680ac19..00c6fe40 100644
+--- a/source/blender/blenloader/intern/versioning_300.cc
++++ b/source/blender/blenloader/intern/versioning_300.cc
+@@ -4483,6 +4483,38 @@ void blo_do_versions_300(FileData *fd, Library * /*lib*/, Main *bmain)
+       }
+     }
+   }
++  /* using float property check for versioning since can't rely on blender version*/
++  if (!DNA_struct_elem_find(fd->filesdna, "SceneEEVEE", "float", "diffuse_intensity")) {
++    LISTBASE_FOREACH (Scene *, scene, &bmain->scenes) {
++      if (scene->eevee.ssr_diffuse_versioning < 1.160f) {
++        scene->eevee.ssr_diffuse_versioning = 1.161f;
++
++        scene->eevee.ssr_diffuse_intensity = 1.0f;
++        scene->eevee.ssr_diffuse_thickness = 1.0f;
++        scene->eevee.ssr_diffuse_resolve_bias = 0.1f;
++        scene->eevee.ssr_diffuse_quality = 0.25f;
++        scene->eevee.ssr_diffuse_clamp = 1.0f;
++        scene->eevee.ssr_diffuse_ao = 1.0f;
++        scene->eevee.ssr_diffuse_ao_limit = 0.25f;
++
++        scene->eevee.ssr_diffuse_probe_trace = 0;
++        scene->eevee.ssr_diffuse_probe_intensity = 1.0f;
++        scene->eevee.ssr_diffuse_probe_clamp = 1.0f;
++
++        scene->eevee.ssr_diffuse_filter = 1.0f;
++        scene->eevee.ssr_diffuse_fsize = 16.0f;
++        scene->eevee.ssr_diffuse_fsamples = 1;
++        scene->eevee.ssr_diffuse_fnweight = 1.0f;
++        scene->eevee.ssr_diffuse_fdweight = 1.0f;
++        scene->eevee.ssr_diffuse_faoweight = 0.75f;
++
++        scene->eevee.ssr_diffuse_debug_a = 1.0f;
++        scene->eevee.ssr_diffuse_debug_b = 1.0f;
++        scene->eevee.ssr_diffuse_debug_c = 1.0f;
++        scene->eevee.ssr_diffuse_debug_d = 1.0f;
++      }
++    }
++  }
+ 
+   /**
+    * Versioning code until next subversion bump goes here.
+diff --git a/source/blender/draw/CMakeLists.txt b/source/blender/draw/CMakeLists.txt
+index 89d96abc..887781e3 100644
+--- a/source/blender/draw/CMakeLists.txt
++++ b/source/blender/draw/CMakeLists.txt
+@@ -370,6 +370,10 @@ set(GLSL_SRC
+   engines/eevee/shaders/effect_reflection_lib.glsl
+   engines/eevee/shaders/effect_reflection_resolve_frag.glsl
+   engines/eevee/shaders/effect_reflection_trace_frag.glsl
++  engines/eevee/shaders/effect_ssgi_trace_frag.glsl
++  engines/eevee/shaders/effect_ssgi_resolve_frag.glsl
++  engines/eevee/shaders/effect_ssgi_filter_frag.glsl
++  engines/eevee/shaders/effect_ssgi_filter_sec_frag.glsl
+   engines/eevee/shaders/effect_downsample_frag.glsl
+   engines/eevee/shaders/effect_downsample_cube_frag.glsl
+   engines/eevee/shaders/effect_gtao_frag.glsl
+@@ -552,6 +556,7 @@ set(GLSL_SRC
+   intern/shaders/common_hair_refine_vert.glsl
+   intern/shaders/common_intersect_lib.glsl
+   intern/shaders/common_math_geom_lib.glsl
++  intern/shaders/common_colorpacking_lib.glsl
+   intern/shaders/common_math_lib.glsl
+   intern/shaders/common_pointcloud_lib.glsl
+   intern/shaders/common_shape_lib.glsl
+diff --git a/source/blender/draw/engines/eevee/eevee_private.h b/source/blender/draw/engines/eevee/eevee_private.h
+index 131768bd..07ff8c1a 100644
+--- a/source/blender/draw/engines/eevee/eevee_private.h
++++ b/source/blender/draw/engines/eevee/eevee_private.h
+@@ -244,6 +244,10 @@ typedef struct EEVEE_PassList {
+   struct DRWPass *ssr_resolve;
+   struct DRWPass *ssr_resolve_probe;
+   struct DRWPass *ssr_resolve_refl;
++  struct DRWPass *ssgi_raytrace;
++  struct DRWPass *ssgi_resolve;
++  struct DRWPass *ssgi_filter;
++  struct DRWPass *ssgi_filter_sec;
+   struct DRWPass *sss_blur_ps;
+   struct DRWPass *sss_resolve_ps;
+   struct DRWPass *sss_translucency_ps;
+@@ -708,6 +712,12 @@ typedef struct EEVEE_EffectsInfo {
+   struct GPUTexture *ssr_specrough_input;
+   struct GPUTexture *ssr_hit_output;
+   struct GPUTexture *ssr_hit_depth;
++  /* SSGI (shares ssr data) */
++  struct GPUTexture *ssgi_input;
++  struct GPUTexture *ssgi_hit_output; //trace
++  struct GPUTexture *ssgi_hit_depth; //trace
++  struct GPUTexture *ssgi_filter_input;  //filter a
++  struct GPUTexture *ssgi_filter_sec_input; //filter b
+   /* Intel devices require a split execution due to shader issue */
+   bool use_split_ssr_pass;
+ 
+@@ -873,6 +883,31 @@ typedef struct EEVEE_CommonUniformBuffer {
+   float alpha_hash_scale;                      /* float */
+   float camera_uv_scale[2], camera_uv_bias[2]; /* vec4 */
+   float planar_clip_plane[4];                  /* vec4 */
++    /* SSGI */
++  float ssr_diffuse_versioning;                       /* float */
++  float ssr_diffuse_intensity;                        /* float */
++  float ssr_diffuse_thickness;                        /* float */
++  float ssr_diffuse_resolve_bias;                     /* float */ //
++  float ssr_diffuse_quality;                          /* float */
++  float ssr_diffuse_clamp;                            /* float */
++  float ssr_diffuse_ao;                               /* float */
++  float ssr_diffuse_ao_limit;                         /* float */ //
++  int ssr_diffuse_probe_trace;                        /* int */
++  float ssr_diffuse_probe_intensity;                  /* float */
++  float ssr_diffuse_probe_clamp;                      /* float */
++  float ssr_diffuse_filter;                           /* float */ //
++  float ssr_diffuse_fsize;                            /* float */
++  int ssr_diffuse_fsamples;                           /* int */
++  float ssr_diffuse_fnweight;                         /* float */
++  float ssr_diffuse_fdweight;                         /* float */ //
++  float ssr_diffuse_faoweight;                        /* float */
++  float ssr_diffuse_debug_a;                          /* float */
++  float ssr_diffuse_debug_b;                          /* float */
++  float ssr_diffuse_debug_c;                          /* float */ //
++  float ssr_diffuse_debug_d;                          /* float */
++  float _pad_1; // 8
++  float _pad_2; // 12
++  float _pad_3; // 16 //
+ } EEVEE_CommonUniformBuffer;
+ 
+ BLI_STATIC_ASSERT_ALIGN(EEVEE_CommonUniformBuffer, 16)
+@@ -1223,6 +1258,10 @@ struct GPUShader *EEVEE_shaders_effect_reflection_trace_sh_get(void);
+ struct GPUShader *EEVEE_shaders_effect_reflection_resolve_sh_get(void);
+ struct GPUShader *EEVEE_shaders_effect_reflection_resolve_probe_sh_get(void);
+ struct GPUShader *EEVEE_shaders_effect_reflection_resolve_refl_sh_get(void);
++struct GPUShader *EEVEE_shaders_effect_ssgi_trace_sh_get(void);
++struct GPUShader *EEVEE_shaders_effect_ssgi_resolve_sh_get(void);
++struct GPUShader *EEVEE_shaders_effect_ssgi_filter_sh_get(void);
++struct GPUShader *EEVEE_shaders_effect_ssgi_filter_sec_sh_get(void);
+ struct GPUShader *EEVEE_shaders_renderpasses_accumulate_sh_get(void);
+ struct GPUShader *EEVEE_shaders_renderpasses_post_process_sh_get(void);
+ struct GPUShader *EEVEE_shaders_cryptomatte_sh_get(bool is_hair);
+diff --git a/source/blender/draw/engines/eevee/eevee_render.c b/source/blender/draw/engines/eevee/eevee_render.c
+index 8a79d80c..89188824 100644
+--- a/source/blender/draw/engines/eevee/eevee_render.c
++++ b/source/blender/draw/engines/eevee/eevee_render.c
+@@ -520,6 +520,7 @@ static void eevee_render_draw_background(EEVEE_Data *vedata)
+                                  GPU_ATTACHMENT_NONE,
+                                  GPU_ATTACHMENT_NONE,
+                                  GPU_ATTACHMENT_NONE,
++                                 GPU_ATTACHMENT_NONE,
+                                  GPU_ATTACHMENT_NONE});
+   GPU_framebuffer_bind(fbl->main_fb);
+ 
+@@ -532,7 +533,8 @@ static void eevee_render_draw_background(EEVEE_Data *vedata)
+                                  GPU_ATTACHMENT_TEXTURE(stl->effects->ssr_specrough_input),
+                                  GPU_ATTACHMENT_TEXTURE(stl->effects->sss_irradiance),
+                                  GPU_ATTACHMENT_TEXTURE(stl->effects->sss_radius),
+-                                 GPU_ATTACHMENT_TEXTURE(stl->effects->sss_albedo)});
++                                 GPU_ATTACHMENT_TEXTURE(stl->effects->sss_albedo),
++                                 GPU_ATTACHMENT_TEXTURE(stl->effects->ssgi_input)});
+   GPU_framebuffer_bind(fbl->main_fb);
+ }
+ 
+diff --git a/source/blender/draw/engines/eevee/eevee_renderpasses.c b/source/blender/draw/engines/eevee/eevee_renderpasses.c
+index 5174981f..ee87b263 100644
+--- a/source/blender/draw/engines/eevee/eevee_renderpasses.c
++++ b/source/blender/draw/engines/eevee/eevee_renderpasses.c
+@@ -473,7 +473,7 @@ void EEVEE_renderpasses_draw_debug(EEVEE_Data *vedata)
+       tx = txl->maxzbuffer;
+       break;
+     case 2:
+-      /* UNUSED */
++      tx = effects->ssgi_input;
+       break;
+     case 3:
+       tx = effects->ssr_normal_input;
+diff --git a/source/blender/draw/engines/eevee/eevee_screen_raytrace.c b/source/blender/draw/engines/eevee/eevee_screen_raytrace.c
+index 27c63fe5..9e0a7df7 100644
+--- a/source/blender/draw/engines/eevee/eevee_screen_raytrace.c
++++ b/source/blender/draw/engines/eevee/eevee_screen_raytrace.c
+@@ -46,7 +46,7 @@ int EEVEE_screen_raytrace_init(EEVEE_ViewLayerData *sldata, EEVEE_Data *vedata)
+     }
+     effects->ssr_was_valid_double_buffer = stl->g_data->valid_double_buffer;
+ 
+-    effects->reflection_trace_full = (scene_eval->eevee.flag & SCE_EEVEE_SSR_HALF_RESOLUTION) == 0;
++    effects->reflection_trace_full = true; //Temp disabled due to UV scale bug //effects->reflection_trace_full = (scene_eval->eevee.flag & SCE_EEVEE_SSR_HALF_RESOLUTION) == 0;
+     common_data->ssr_thickness = scene_eval->eevee.ssr_thickness;
+     common_data->ssr_border_fac = scene_eval->eevee.ssr_border_fade;
+     common_data->ssr_firefly_fac = scene_eval->eevee.ssr_firefly_fac;
+@@ -54,9 +54,38 @@ int EEVEE_screen_raytrace_init(EEVEE_ViewLayerData *sldata, EEVEE_Data *vedata)
+     common_data->ssr_quality = 1.0f - 0.95f * scene_eval->eevee.ssr_quality;
+     common_data->ssr_brdf_bias = 0.1f + common_data->ssr_quality * 0.6f; /* Range [0.1, 0.7]. */
+ 
++    common_data->ssr_diffuse_versioning = scene_eval->eevee.ssr_diffuse_versioning;
++    /* trace */
++    common_data->ssr_diffuse_intensity = scene_eval->eevee.ssr_diffuse_intensity;
++    common_data->ssr_diffuse_thickness = scene_eval->eevee.ssr_diffuse_thickness;
++    common_data->ssr_diffuse_resolve_bias = scene_eval->eevee.ssr_diffuse_resolve_bias;
++    common_data->ssr_diffuse_quality = scene_eval->eevee.ssr_diffuse_quality;
++    common_data->ssr_diffuse_clamp = scene_eval->eevee.ssr_diffuse_clamp;
++    common_data->ssr_diffuse_ao = scene_eval->eevee.ssr_diffuse_ao;
++    common_data->ssr_diffuse_ao_limit = scene_eval->eevee.ssr_diffuse_ao_limit;
++    /* probe */
++    common_data->ssr_diffuse_probe_trace = scene_eval->eevee.ssr_diffuse_probe_trace;
++    common_data->ssr_diffuse_probe_intensity = scene_eval->eevee.ssr_diffuse_probe_intensity;
++    common_data->ssr_diffuse_probe_clamp = scene_eval->eevee.ssr_diffuse_probe_clamp;
++    /* filter */
++    common_data->ssr_diffuse_filter = scene_eval->eevee.ssr_diffuse_filter;
++    common_data->ssr_diffuse_fsize = scene_eval->eevee.ssr_diffuse_fsize;
++    common_data->ssr_diffuse_fsamples = scene_eval->eevee.ssr_diffuse_fsamples;
++    common_data->ssr_diffuse_fnweight = scene_eval->eevee.ssr_diffuse_fnweight;
++    common_data->ssr_diffuse_fdweight = scene_eval->eevee.ssr_diffuse_fdweight;
++    common_data->ssr_diffuse_faoweight = scene_eval->eevee.ssr_diffuse_faoweight;
++    /* debug */
++    common_data->ssr_diffuse_debug_a = scene_eval->eevee.ssr_diffuse_debug_a;
++    common_data->ssr_diffuse_debug_b = scene_eval->eevee.ssr_diffuse_debug_b;
++    common_data->ssr_diffuse_debug_c = scene_eval->eevee.ssr_diffuse_debug_c;
++    common_data->ssr_diffuse_debug_d = scene_eval->eevee.ssr_diffuse_debug_d;
++
+     if (common_data->ssr_firefly_fac < 1e-8f) {
+       common_data->ssr_firefly_fac = FLT_MAX;
+     }
++    if (common_data->ssr_diffuse_clamp < 1e-8f) {
++      common_data->ssr_diffuse_clamp = FLT_MAX;
++    }
+ 
+     void *owner = (void *)EEVEE_screen_raytrace_init;
+     const int divisor = (effects->reflection_trace_full) ? 1 : 2;
+@@ -68,6 +97,11 @@ int EEVEE_screen_raytrace_init(EEVEE_ViewLayerData *sldata, EEVEE_Data *vedata)
+     tracing_res[0] = max_ii(1, tracing_res[0]);
+     tracing_res[1] = max_ii(1, tracing_res[1]);
+ 
++    int gi_resolve_res[2] = {(int)viewport_size[0], (int)viewport_size[1]}; // const float *viewport_size = DRW_viewport_size_get();
++    gi_resolve_res [1] = max_ii(1, gi_resolve_res[1]);
++    gi_resolve_res [1] = max_ii(1, gi_resolve_res[1]);
++    
++
+     common_data->ssr_uv_scale[0] = size_fs[0] / ((float)tracing_res[0] * divisor);
+     common_data->ssr_uv_scale[1] = size_fs[1] / ((float)tracing_res[1] * divisor);
+ 
+@@ -77,18 +111,29 @@ int EEVEE_screen_raytrace_init(EEVEE_ViewLayerData *sldata, EEVEE_Data *vedata)
+         UNPACK2(size_fs), format, usage, owner);
+ 
+     GPU_framebuffer_texture_attach(fbl->main_fb, effects->ssr_specrough_input, 2, 0);
++    effects->ssgi_input = DRW_texture_pool_query_2d_ex(UNPACK2(size_fs), format, usage, owner);
++    GPU_framebuffer_texture_attach(fbl->main_fb, effects->ssgi_input, 6, 0); // pu_framebuffer_texture_attach_ex(fb, attachment, slot); // ssgi 6  
+ 
+     /* Ray-tracing output. */
+     effects->ssr_hit_output = DRW_texture_pool_query_2d_ex(
+         UNPACK2(tracing_res), GPU_RGBA16F, usage, owner);
+     effects->ssr_hit_depth = DRW_texture_pool_query_2d_ex(
+         UNPACK2(tracing_res), GPU_R16F, usage, owner);
++    effects->ssgi_hit_output = DRW_texture_pool_query_2d_ex(UNPACK2(tracing_res), GPU_RGBA16F, usage, owner);
++    effects->ssgi_hit_depth = DRW_texture_pool_query_2d_ex(UNPACK2(tracing_res), GPU_R16F, usage, owner);
++    effects->ssgi_filter_input = DRW_texture_pool_query_2d_ex(UNPACK2(gi_resolve_res), GPU_RGBA16F, usage, owner);
++    effects->ssgi_filter_sec_input = DRW_texture_pool_query_2d_ex(UNPACK2(gi_resolve_res), GPU_RGBA16F, usage, owner);
+ 
+     GPU_framebuffer_ensure_config(&fbl->screen_tracing_fb,
+                                   {
+                                       GPU_ATTACHMENT_NONE,
+                                       GPU_ATTACHMENT_TEXTURE(effects->ssr_hit_output),
+                                       GPU_ATTACHMENT_TEXTURE(effects->ssr_hit_depth),
++                                      GPU_ATTACHMENT_TEXTURE(effects->ssgi_hit_output),
++                                      GPU_ATTACHMENT_TEXTURE(effects->ssgi_hit_depth),
++                                      GPU_ATTACHMENT_TEXTURE(effects->ssgi_filter_input),
++                                      GPU_ATTACHMENT_TEXTURE(effects->ssgi_filter_sec_input),
++                                      GPU_ATTACHMENT_TEXTURE(effects->ssgi_input)
+                                   });
+ 
+     /* NOTE(Metal): Intel GPUs rendering with Metal require the reflections pass to be split
+@@ -105,6 +150,8 @@ int EEVEE_screen_raytrace_init(EEVEE_ViewLayerData *sldata, EEVEE_Data *vedata)
+   GPU_FRAMEBUFFER_FREE_SAFE(fbl->screen_tracing_fb);
+   effects->ssr_specrough_input = NULL;
+   effects->ssr_hit_output = NULL;
++  effects->ssgi_input = NULL;
++  effects->ssgi_hit_output = NULL;
+ 
+   return 0;
+ }
+@@ -120,9 +167,17 @@ void EEVEE_screen_raytrace_cache_init(EEVEE_ViewLayerData *sldata, EEVEE_Data *v
+   if ((effects->enabled_effects & EFFECT_SSR) != 0) {
+     struct GPUShader *trace_shader = EEVEE_shaders_effect_reflection_trace_sh_get();
+     struct GPUShader *resolve_shader = EEVEE_shaders_effect_reflection_resolve_sh_get();
++    struct GPUShader *ssgi_trace_shader = EEVEE_shaders_effect_ssgi_trace_sh_get();
++    struct GPUShader *ssgi_resolve_shader = EEVEE_shaders_effect_ssgi_resolve_sh_get();
++    struct GPUShader *ssgi_filter_shader = EEVEE_shaders_effect_ssgi_filter_sh_get();
++    struct GPUShader *ssgi_filter_sec_shader = EEVEE_shaders_effect_ssgi_filter_sec_sh_get();
+ 
+     int hitbuf_size[3];
+     GPU_texture_get_mipmap_size(effects->ssr_hit_output, 0, hitbuf_size);
++    GPU_texture_get_mipmap_size(effects->ssgi_hit_output, 0, hitbuf_size);
++    int gi_resolve_res[3];
++    GPU_texture_get_mipmap_size(effects->ssgi_filter_input, 0, gi_resolve_res);
++    GPU_texture_get_mipmap_size(effects->ssgi_filter_sec_input, 0, gi_resolve_res);
+ 
+     /** Screen space ray-tracing overview
+      *
+@@ -154,7 +209,22 @@ void EEVEE_screen_raytrace_cache_init(EEVEE_ViewLayerData *sldata, EEVEE_Data *v
+         grp, "randomScale", effects->reflection_trace_full ? 0.0f : 0.5f);
+     DRW_shgroup_call_procedural_triangles(grp, NULL, 1);
+ 
++    DRW_PASS_CREATE(psl->ssgi_raytrace, DRW_STATE_WRITE_COLOR);
++    grp = DRW_shgroup_create(ssgi_trace_shader, psl->ssgi_raytrace);
++    DRW_shgroup_uniform_texture_ref(grp, "normalBuffer", &effects->ssr_normal_input);
++    DRW_shgroup_uniform_texture_ref(grp, "ssgiInputBuffer", &effects->ssgi_input);
++    DRW_shgroup_uniform_texture_ref(grp, "maxzBuffer", &txl->maxzbuffer);
++    DRW_shgroup_uniform_texture(grp, "utilTex", EEVEE_materials_get_util_tex());
++    DRW_shgroup_uniform_block(grp, "grid_block", sldata->grid_ubo);
++    DRW_shgroup_uniform_block(grp, "common_block", sldata->common_ubo);
++    DRW_shgroup_uniform_block(grp, "renderpass_block", sldata->renderpass_ubo.combined);
++    DRW_shgroup_uniform_vec2_copy(grp, "targetSize", (float[2]){hitbuf_size[0], hitbuf_size[1]});
++    DRW_shgroup_uniform_float_copy(
++        grp, "randomScale", effects->reflection_trace_full ? 0.0f : 0.5f); /* TODO - Separate toggle */
++    DRW_shgroup_call_procedural_triangles(grp, NULL, 1);
++
+     GPUSamplerState no_filter = GPU_SAMPLER_DEFAULT;
++    GPUSamplerState filter = {GPU_SAMPLER_FILTERING_LINEAR}; // (GPU_SAMPLER_FILTER | GPU_SAMPLER_REPEAT_S); //GPUSamplerState filter = {GPU_SAMPLER_FILTERING_LINEAR}; //TODO recheck this - partially refactored
+ 
+     if (effects->use_split_ssr_pass) {
+       /* Prepare passes for split reflections resolve variant. */
+@@ -196,7 +266,7 @@ void EEVEE_screen_raytrace_cache_init(EEVEE_ViewLayerData *sldata, EEVEE_Data *v
+         DRW_shgroup_uniform_int(grp, "samplePoolOffset", &effects->taa_current_sample, 1);
+         DRW_shgroup_uniform_texture_ref(grp, "horizonBuffer", &effects->gtao_horizons);
+         DRW_shgroup_call_procedural_triangles(grp, NULL, 1);
+-      }
++        }
+     }
+     else {
+       /* Prepare standard reflections resolve pass. */
+@@ -226,6 +296,58 @@ void EEVEE_screen_raytrace_cache_init(EEVEE_ViewLayerData *sldata, EEVEE_Data *v
+       DRW_shgroup_uniform_texture_ref(grp, "horizonBuffer", &effects->gtao_horizons);
+       DRW_shgroup_call_procedural_triangles(grp, NULL, 1);
+     }
++
++
++      DRW_PASS_CREATE(psl->ssgi_resolve, DRW_STATE_WRITE_COLOR);
++      grp = DRW_shgroup_create(ssgi_resolve_shader, psl->ssgi_resolve);
++      DRW_shgroup_uniform_texture_ref(grp, "normalBuffer", &effects->ssr_normal_input);
++      DRW_shgroup_uniform_texture_ref(grp, "ssgiInputBuffer", &effects->ssgi_input);
++      DRW_shgroup_uniform_texture_ref(grp, "probeCubes", &lcache->cube_tx.tex); //
++      DRW_shgroup_uniform_texture_ref_ex(grp, "ssgiHitBuffer", &effects->ssgi_hit_output, no_filter);
++      DRW_shgroup_uniform_texture_ref_ex(grp, "ssgiHitDepth", &effects->ssgi_hit_depth, no_filter);
++      DRW_shgroup_uniform_texture_ref(grp, "colorBuffer", &txl->filtered_radiance);
++      DRW_shgroup_uniform_texture_ref(grp, "maxzBuffer", &txl->maxzbuffer);
++      DRW_shgroup_uniform_texture_ref(grp, "shadowCubeTexture", &sldata->shadow_cube_pool);
++      DRW_shgroup_uniform_texture_ref(grp, "shadowCascadeTexture", &sldata->shadow_cascade_pool);
++      DRW_shgroup_uniform_texture(grp, "utilTex", EEVEE_materials_get_util_tex());
++      DRW_shgroup_uniform_block(grp, "light_block", sldata->light_ubo);
++      DRW_shgroup_uniform_block(grp, "shadow_block", sldata->shadow_ubo);
++      DRW_shgroup_uniform_block(grp, "grid_block", sldata->grid_ubo);
++      DRW_shgroup_uniform_block(grp, "probe_block", sldata->probe_ubo); //
++      DRW_shgroup_uniform_block(grp, "common_block", sldata->common_ubo);
++      DRW_shgroup_uniform_block(grp, "renderpass_block", sldata->renderpass_ubo.combined);
++      DRW_shgroup_uniform_int(grp, "samplePoolOffset", &effects->taa_current_sample, 1);
++      DRW_shgroup_uniform_texture_ref(grp, "horizonBuffer", &effects->gtao_horizons);
++      DRW_shgroup_call_procedural_triangles(grp, NULL, 1);
++
++
++      /* TODO cleanup */
++      DRW_PASS_CREATE(psl->ssgi_filter, DRW_STATE_WRITE_COLOR);
++      grp = DRW_shgroup_create(ssgi_filter_shader, psl->ssgi_filter);
++      DRW_shgroup_uniform_texture_ref(grp, "normalBuffer", &effects->ssr_normal_input);
++      DRW_shgroup_uniform_texture_ref(grp, "ssgiInputBuffer", &effects->ssgi_input);
++      DRW_shgroup_uniform_texture_ref_ex(grp, "ssgiFilterInput", &effects->ssgi_filter_input, filter);
++      DRW_shgroup_uniform_texture_ref(grp, "maxzBuffer", &txl->maxzbuffer);
++      DRW_shgroup_uniform_block(grp, "common_block", sldata->common_ubo);
++      DRW_shgroup_uniform_texture(grp, "utilTex", EEVEE_materials_get_util_tex());
++      DRW_shgroup_uniform_block(grp, "renderpass_block", sldata->renderpass_ubo.combined);
++      DRW_shgroup_uniform_int(grp, "samplePoolOffset", &effects->taa_current_sample, 1);
++      DRW_shgroup_uniform_vec2_copy(grp, "targetSize", (float[2]){gi_resolve_res[0], gi_resolve_res[1]});
++      DRW_shgroup_call_procedural_triangles(grp, NULL, 1);
++
++      DRW_PASS_CREATE(psl->ssgi_filter_sec, DRW_STATE_WRITE_COLOR | DRW_STATE_BLEND_ADD);
++      grp = DRW_shgroup_create(ssgi_filter_sec_shader, psl->ssgi_filter_sec);
++      DRW_shgroup_uniform_texture_ref(grp, "normalBuffer", &effects->ssr_normal_input);
++      DRW_shgroup_uniform_texture_ref(grp, "ssgiInputBuffer", &effects->ssgi_input);
++      DRW_shgroup_uniform_texture_ref_ex(grp, "ssgiFilterInput", &effects->ssgi_filter_input, filter);
++      DRW_shgroup_uniform_texture_ref_ex(grp, "ssgiFilterSecInput", &effects->ssgi_filter_sec_input, filter);
++      DRW_shgroup_uniform_texture_ref(grp, "maxzBuffer", &txl->maxzbuffer);
++      DRW_shgroup_uniform_block(grp, "common_block", sldata->common_ubo);
++      DRW_shgroup_uniform_texture(grp, "utilTex", EEVEE_materials_get_util_tex());
++      DRW_shgroup_uniform_block(grp, "renderpass_block", sldata->renderpass_ubo.combined);
++      DRW_shgroup_uniform_int(grp, "samplePoolOffset", &effects->taa_current_sample, 1);
++      DRW_shgroup_uniform_vec2_copy(grp, "targetSize", (float[2]){gi_resolve_res[0], gi_resolve_res[1]});
++      DRW_shgroup_call_procedural_triangles(grp, NULL, 1);
+   }
+ }
+ 
+@@ -258,11 +380,17 @@ void EEVEE_reflection_compute(EEVEE_ViewLayerData *UNUSED(sldata), EEVEE_Data *v
+     /* Ray-trace. */
+     GPU_framebuffer_bind(fbl->screen_tracing_fb);
+     DRW_draw_pass(psl->ssr_raytrace);
++    DRW_draw_pass(psl->ssgi_raytrace);
++    /* TODO Fix */
++    DRW_draw_pass(psl->ssgi_resolve);
++    DRW_draw_pass(psl->ssgi_filter);
+ 
+     EEVEE_effects_downsample_radiance_buffer(vedata, txl->color_double_buffer);
+ 
+     GPU_framebuffer_bind(fbl->main_color_fb);
+ 
++    DRW_draw_pass(psl->ssgi_filter_sec);
++
+     if (effects->use_split_ssr_pass) {
+       /* Trace reflections for probes and SSR independently */
+       DRW_draw_pass(psl->ssr_resolve_probe);
+@@ -314,6 +442,7 @@ void EEVEE_reflection_output_accumulate(EEVEE_ViewLayerData *UNUSED(sldata), EEV
+       DRW_draw_pass(psl->ssr_resolve_refl);
+     }
+     else {
++      //DRW_draw_pass(psl->ssgi_filter_sec); //Disabled for spec light pass for now, should be in diffuse light to be correct
+       DRW_draw_pass(psl->ssr_resolve);
+     }
+   }
+diff --git a/source/blender/draw/engines/eevee/eevee_shaders.cc b/source/blender/draw/engines/eevee/eevee_shaders.cc
+index 00b18039..38ba41ff 100644
+--- a/source/blender/draw/engines/eevee/eevee_shaders.cc
++++ b/source/blender/draw/engines/eevee/eevee_shaders.cc
+@@ -116,6 +116,10 @@ static struct {
+   struct GPUShader *reflection_resolve;
+   struct GPUShader *reflection_resolve_probe;
+   struct GPUShader *reflection_resolve_raytrace;
++  struct GPUShader *ssgi_trace;
++  struct GPUShader *ssgi_resolve;
++  struct GPUShader *ssgi_filter;
++  struct GPUShader *ssgi_filter_sec;
+ 
+   /* Shadows */
+   struct GPUShader *shadow_sh;
+@@ -168,6 +172,7 @@ extern "C" char datatoc_common_math_lib_glsl[];
+ extern "C" char datatoc_common_math_geom_lib_glsl[];
+ extern "C" char datatoc_common_view_lib_glsl[];
+ extern "C" char datatoc_gpu_shader_codegen_lib_glsl[];
++extern "C" char datatoc_common_colorpacking_lib_glsl[];
+ 
+ extern "C" char datatoc_ambient_occlusion_lib_glsl[];
+ extern "C" char datatoc_bsdf_common_lib_glsl[];
+@@ -215,6 +220,7 @@ static void eevee_shader_library_ensure()
+     DRW_SHADER_LIB_ADD_SHARED(e_data.lib, engine_eevee_legacy_shared);
+     DRW_SHADER_LIB_ADD(e_data.lib, common_math_lib);
+     DRW_SHADER_LIB_ADD(e_data.lib, common_math_geom_lib);
++    DRW_SHADER_LIB_ADD(e_data.lib, common_colorpacking_lib);
+     DRW_SHADER_LIB_ADD(e_data.lib, common_hair_lib);
+     DRW_SHADER_LIB_ADD(e_data.lib, common_view_lib);
+     DRW_SHADER_LIB_ADD(e_data.lib, common_uniforms_lib);
+@@ -661,6 +667,15 @@ struct GPUShader *EEVEE_shaders_effect_reflection_trace_sh_get(void)
+   return e_data.reflection_trace;
+ }
+ 
++struct GPUShader *EEVEE_shaders_effect_ssgi_trace_sh_get(void)
++{
++  if (e_data.ssgi_trace == nullptr) {
++    e_data.ssgi_trace = DRW_shader_create_from_info_name(
++        "eevee_legacy_effect_ssgi_trace");
++  }
++  return e_data.ssgi_trace;
++}
++
+ struct GPUShader *EEVEE_shaders_effect_reflection_resolve_sh_get(void)
+ {
+   if (e_data.reflection_resolve == nullptr) {
+@@ -670,6 +685,33 @@ struct GPUShader *EEVEE_shaders_effect_reflection_resolve_sh_get(void)
+   return e_data.reflection_resolve;
+ }
+ 
++struct GPUShader *EEVEE_shaders_effect_ssgi_resolve_sh_get(void)
++{
++  if (e_data.ssgi_resolve == nullptr) {
++    e_data.ssgi_resolve = DRW_shader_create_from_info_name(
++        "eevee_legacy_effect_ssgi_resolve");
++  }
++  return e_data.ssgi_resolve;
++}
++
++struct GPUShader *EEVEE_shaders_effect_ssgi_filter_sh_get(void)
++{
++  if (e_data.ssgi_filter == nullptr) {
++    e_data.ssgi_filter = DRW_shader_create_from_info_name(
++        "eevee_legacy_effect_ssgi_filter");
++  }
++  return e_data.ssgi_filter;
++}
++
++struct GPUShader *EEVEE_shaders_effect_ssgi_filter_sec_sh_get(void)
++{
++  if (e_data.ssgi_filter_sec == nullptr) {
++    e_data.ssgi_filter_sec = DRW_shader_create_from_info_name(
++        "eevee_legacy_effect_ssgi_filter_sec");
++  }
++  return e_data.ssgi_filter_sec;
++}
++
+ struct GPUShader *EEVEE_shaders_effect_reflection_resolve_probe_sh_get(void)
+ {
+   if (e_data.reflection_resolve_probe == nullptr) {
+@@ -1534,7 +1576,11 @@ void EEVEE_shaders_free(void)
+     DRW_SHADER_FREE_SAFE(e_data.bloom_resolve_sh[i]);
+   }
+   DRW_SHADER_FREE_SAFE(e_data.reflection_trace);
++  DRW_SHADER_FREE_SAFE(e_data.ssgi_trace);
+   DRW_SHADER_FREE_SAFE(e_data.reflection_resolve);
++  DRW_SHADER_FREE_SAFE(e_data.ssgi_resolve);
++  DRW_SHADER_FREE_SAFE(e_data.ssgi_filter);
++  DRW_SHADER_FREE_SAFE(e_data.ssgi_filter_sec);
+   DRW_SHADER_FREE_SAFE(e_data.reflection_resolve_probe);
+   DRW_SHADER_FREE_SAFE(e_data.reflection_resolve_raytrace);
+   DRW_SHADER_LIB_FREE_SAFE(e_data.lib);
+diff --git a/source/blender/draw/engines/eevee/shaders/ambient_occlusion_lib.glsl b/source/blender/draw/engines/eevee/shaders/ambient_occlusion_lib.glsl
+index 2e3bb78b..5204db16 100644
+--- a/source/blender/draw/engines/eevee/shaders/ambient_occlusion_lib.glsl
++++ b/source/blender/draw/engines/eevee/shaders/ambient_occlusion_lib.glsl
+@@ -478,3 +478,18 @@ float ambient_occlusion_eval(vec3 normal,
+   return 1.0;
+ #endif
+ }
++/* temp dirty read for maxzBuffer */ 
++float ambient_occlusion_depth()
++{
++#if defined(GPU_FRAGMENT_SHADER) && (defined(MESH_SHADER) || defined(HAIR_SHADER)) && !defined(DEPTH_SHADER) && !defined(VOLUMETRICS)
++
++  float depth = 0.0;
++  vec2 uv = get_uvs_from_view(viewPosition);
++  float zbuffer = textureLod(maxzBuffer, uv * hizUvScale.xy, 0).r; // lod 0
++  depth = -get_view_z_from_depth(zbuffer);
++
++  return depth;
++#else
++  return 1.0;
++#endif
++}
+diff --git a/source/blender/draw/engines/eevee/shaders/closure_eval_diffuse_lib.glsl b/source/blender/draw/engines/eevee/shaders/closure_eval_diffuse_lib.glsl
+index 965b11c8..9025b3f0 100644
+--- a/source/blender/draw/engines/eevee/shaders/closure_eval_diffuse_lib.glsl
++++ b/source/blender/draw/engines/eevee/shaders/closure_eval_diffuse_lib.glsl
+@@ -3,6 +3,7 @@
+ #pragma BLENDER_REQUIRE(ambient_occlusion_lib.glsl)
+ #pragma BLENDER_REQUIRE(closure_eval_lib.glsl)
+ #pragma BLENDER_REQUIRE(renderpass_lib.glsl)
++#pragma BLENDER_REQUIRE(bsdf_common_lib.glsl)
+ 
+ struct ClosureInputDiffuse {
+   vec3 N;      /** Shading normal. */
+@@ -33,6 +34,7 @@ ClosureEvalDiffuse closure_Diffuse_eval_init(inout ClosureInputDiffuse cl_in,
+                                              ClosureEvalCommon cl_common,
+                                              out ClosureOutputDiffuse cl_out)
+ {
++  cl_in.N = ensure_valid_specular_reflection(cl_common.Ng, cl_common.V, cl_in.N);
+   cl_in.N = safe_normalize(cl_in.N);
+   cl_out.radiance = vec3(0.0);
+ 
+@@ -77,12 +79,14 @@ void closure_Diffuse_indirect_end(ClosureInputDiffuse cl_in,
+ {
+   /* If not enough light has been accumulated from probes, use the world specular cubemap
+    * to fill the remaining energy needed. */
+-  if (cl_common.diffuse_accum > 0.0) {
++  if (cl_common.diffuse_accum > 0.0 && ssrDiffuseProbeTrace < 1) {
+     vec3 probe_radiance = probe_evaluate_world_diff(cl_eval.probe_sampling_dir);
+     cl_out.radiance += cl_common.diffuse_accum * probe_radiance;
+   }
+   /* Apply occlusion on radiance before the light loop. */
+-  cl_out.radiance *= cl_eval.ambient_occlusion;
++  float ao_transfer = 1.0 * cl_eval.ambient_occlusion;
++  cl_out.radiance *= ao_transfer;
++  cl_out.AO = ao_transfer; /* AO out for SSGI */
+ }
+ 
+ void closure_Diffuse_eval_end(ClosureInputDiffuse cl_in,
+diff --git a/source/blender/draw/engines/eevee/shaders/closure_eval_lib.glsl b/source/blender/draw/engines/eevee/shaders/closure_eval_lib.glsl
+index 83bf29c8..44814316 100644
+--- a/source/blender/draw/engines/eevee/shaders/closure_eval_lib.glsl
++++ b/source/blender/draw/engines/eevee/shaders/closure_eval_lib.glsl
+@@ -167,10 +167,10 @@
+ /* C++ struct initialization. */
+ #  define CLOSURE_EVAL_DUMMY \
+     { \
+-      vec3(0) \
++      vec3(0), float(1.0) \ /* non zero for denoise buffer artifacting dirty fix*/
+     }
+ #else
+-#  define CLOSURE_EVAL_DUMMY ClosureOutput(vec3(0))
++#  define CLOSURE_EVAL_DUMMY ClosureOutput(vec3(0), float(1.0))
+ #endif
+ #define CLOSURE_INPUT_Dummy_DEFAULT CLOSURE_EVAL_DUMMY
+ #define closure_Dummy_eval_init(cl_in, cl_common, cl_out) CLOSURE_EVAL_DUMMY
+@@ -232,6 +232,7 @@ struct ClosureEvalCommon {
+ /* Common cl_out struct used by most closures. */
+ struct ClosureOutput {
+   vec3 radiance;
++  float AO;
+ };
+ 
+ /* Workaround for screenspace shadows in SSR pass. */
+diff --git a/source/blender/draw/engines/eevee/shaders/closure_eval_surface_lib.glsl b/source/blender/draw/engines/eevee/shaders/closure_eval_surface_lib.glsl
+index 8bfc231f..19a6c4f5 100644
+--- a/source/blender/draw/engines/eevee/shaders/closure_eval_surface_lib.glsl
++++ b/source/blender/draw/engines/eevee/shaders/closure_eval_surface_lib.glsl
+@@ -21,6 +21,9 @@ float out_ssr_roughness;
+ vec3 out_ssr_color;
+ vec3 out_ssr_N;
+ 
++vec3 out_ssgi_color;
++float out_ssgi_data;
++
+ bool aov_is_valid = false;
+ vec3 out_aov;
+ 
+@@ -83,6 +86,10 @@ Closure closure_eval(ClosureDiffuse diffuse)
+   if (!output_sss(diffuse, out_Diffuse_0)) {
+     closure.radiance += out_Diffuse_0.radiance * diffuse.color * diffuse.weight;
+   }
++  /* ssgi */
++  out_ssgi_color = diffuse.color * diffuse.weight;
++  out_ssgi_data = out_Diffuse_0.AO * diffuse.weight;
++  closure.ssgimix = vec4(out_ssgi_color, out_ssgi_data);
+   return closure;
+ }
+ 
+@@ -98,6 +105,10 @@ Closure closure_eval(ClosureTranslucent translucent)
+ 
+   Closure closure = CLOSURE_DEFAULT;
+   closure.radiance += out_Translucent_0.radiance * translucent.color * translucent.weight;
++  /* ssgi */
++  out_ssgi_color = translucent.color * translucent.weight;
++  out_ssgi_data = out_Translucent_0.AO;
++  closure.ssgimix = vec4(out_ssgi_color, out_ssgi_data);
+   return closure;
+ }
+ 
+@@ -158,6 +169,10 @@ Closure closure_eval(ClosureTransparency transparency)
+   Closure closure = CLOSURE_DEFAULT;
+   closure.transmittance += transparency.transmittance * transparency.weight;
+   closure.holdout += transparency.holdout * transparency.weight;
++    /* ssgi */
++  out_ssgi_color = vec3(0.0);
++  out_ssgi_data = 0.0;
++  closure.ssgimix = vec4(out_ssgi_color, out_ssgi_data);
+   return closure;
+ }
+ 
+@@ -221,6 +236,10 @@ Closure closure_eval(ClosureDiffuse diffuse, ClosureReflection reflection)
+   if (!output_ssr(reflection)) {
+     closure.radiance += out_Glossy_1.radiance * reflection.color * reflection.weight;
+   }
++  /* ssgi */
++  out_ssgi_color = diffuse.color * diffuse.weight;
++  out_ssgi_data = out_Diffuse_0.AO * diffuse.weight;
++  closure.ssgimix = vec4(out_ssgi_color, out_ssgi_data);
+   return closure;
+ #endif
+ }
+@@ -260,6 +279,10 @@ Closure closure_eval(ClosureDiffuse diffuse,
+   if (!output_ssr(reflection)) {
+     closure.radiance += out_Glossy_1.radiance * reflection.color * reflection.weight;
+   }
++  /* ssgi */
++  out_ssgi_color = diffuse.color * diffuse.weight;
++  out_ssgi_data = out_Diffuse_0.AO * diffuse.weight;
++  closure.ssgimix = vec4(out_ssgi_color, out_ssgi_data);
+   return closure;
+ #endif
+ }
+@@ -304,6 +327,10 @@ Closure closure_eval(ClosureDiffuse diffuse,
+   if (!output_ssr(reflection)) {
+     closure.radiance += out_Glossy_1.radiance * reflection.color * reflection.weight;
+   }
++  /* ssgi */
++  out_ssgi_color = diffuse.color * diffuse.weight;
++  out_ssgi_data = out_Diffuse_0.AO * diffuse.weight;
++  closure.ssgimix = vec4(out_ssgi_color, out_ssgi_data);
+   return closure;
+ #endif
+ }
+@@ -369,6 +396,8 @@ Closure closure_add(inout Closure cl1, inout Closure cl2)
+   cl.radiance = cl1.radiance + cl2.radiance;
+   cl.transmittance = cl1.transmittance + cl2.transmittance;
+   cl.holdout = cl1.holdout + cl2.holdout;
++  /* mix ssgi */
++  cl.ssgimix = cl1.ssgimix + cl2.ssgimix;
+   /* Make sure each closure is only added once to the result. */
+   cl1 = CLOSURE_DEFAULT;
+   cl2 = CLOSURE_DEFAULT;
+diff --git a/source/blender/draw/engines/eevee/shaders/closure_type_lib.glsl b/source/blender/draw/engines/eevee/shaders/closure_type_lib.glsl
+index ceef3588..919ad43d 100644
+--- a/source/blender/draw/engines/eevee/shaders/closure_type_lib.glsl
++++ b/source/blender/draw/engines/eevee/shaders/closure_type_lib.glsl
+@@ -15,6 +15,7 @@ struct Closure {
+   vec3 radiance;
+   vec3 transmittance;
+   float holdout;
++  vec4 ssgimix;
+ #endif
+ 
+ /* Metal Default Constructor - Required for C++ constructor syntax. */
+@@ -31,8 +32,8 @@ struct Closure {
+   }
+ #  else
+   /* Explicit Closure constructors -- To support GLSL syntax */
+-  inline Closure(vec3 in_radiance, vec3 in_transmittance, float in_holdout)
+-      : radiance(in_radiance), transmittance(in_transmittance), holdout(in_holdout)
++  inline Closure(vec3 in_radiance, vec3 in_transmittance, float in_holdout, vec4 in_ssgimix)
++      : radiance(in_radiance), transmittance(in_transmittance), holdout(in_holdout), test(in_ssgimix)
+   {
+   }
+ #  endif /* VOLUMETRICS */
+@@ -88,6 +89,7 @@ float ambient_occlusion_eval(vec3 normal,
+                              const float inverted,
+                              const float sample_count);
+ 
++float ambient_occlusion_depth();
+ /* WORKAROUND: Included later with libs. This is because we are mixing include systems. */
+ vec3 safe_normalize(vec3 N);
+ float fast_sqrt(float a);
+@@ -102,5 +104,5 @@ float F_eta(float a, float b);
+ #ifdef VOLUMETRICS
+ #  define CLOSURE_DEFAULT Closure(vec3(0), vec3(0), vec3(0), 0.0)
+ #else
+-#  define CLOSURE_DEFAULT Closure(vec3(0), vec3(0), 0.0)
++#  define CLOSURE_DEFAULT Closure(vec3(0), vec3(0), 0.0, vec4(0.0)) //ssgimix
+ #endif
+diff --git a/source/blender/draw/engines/eevee/shaders/common_uniforms_lib.glsl b/source/blender/draw/engines/eevee/shaders/common_uniforms_lib.glsl
+index 2b7c5943..501c5652 100644
+--- a/source/blender/draw/engines/eevee/shaders/common_uniforms_lib.glsl
++++ b/source/blender/draw/engines/eevee/shaders/common_uniforms_lib.glsl
+@@ -49,6 +49,28 @@ layout(std140) uniform common_block
+   /* Misc */
+   vec4 cameraUvScaleBias;
+   vec4 planarClipPlane;
++  /* SSGI */
++  float ssrDiffuseVersioning;
++  float ssrDiffuseIntensity; /*trace*/
++  float ssrDiffuseThickness;
++  float ssrDiffuseResolveBias;
++  float ssrDiffuseQuality;
++  float ssrDiffuseClamp;
++  float ssrDiffuseAo;
++  float ssrDiffuseAoLimit;
++  int ssrDiffuseProbeTrace; /*probe*/
++  float ssrDiffuseProbeIntensity;
++  float ssrDiffuseProbeClamp;
++  float ssrDiffuseFilter; /*filter*/
++  float ssrDiffuseFsize;
++  int ssrDiffuseFsamples;
++  float ssrDiffuseFnweight;
++  float ssrDiffuseFdweight;
++  float ssrDiffuseFaoweight;
++  float ssrDiffuseDebugA; /*debug*/
++  float ssrDiffuseDebugB;
++  float ssrDiffuseDebugC;
++  float ssrDiffuseDebugD;
+ };
+ 
+ #endif /* !USE_GPU_SHADER_CREATE_INFO */
+diff --git a/source/blender/draw/engines/eevee/shaders/effect_reflection_lib.glsl b/source/blender/draw/engines/eevee/shaders/effect_reflection_lib.glsl
+index a050a9fd..8865013e 100644
+--- a/source/blender/draw/engines/eevee/shaders/effect_reflection_lib.glsl
++++ b/source/blender/draw/engines/eevee/shaders/effect_reflection_lib.glsl
+@@ -24,6 +24,17 @@ struct HitData {
+   bool is_planar;
+ };
+ 
++struct SsgiHitData {
++  /** Hit direction scaled by intersection time. */
++  vec3 hit_dir;
++  /** Screen space [0..1] depth of the reflection hit position, or -1.0 for planar reflections (unused). */
++  float hit_depth;
++  /** Inverse probability of ray spawning in this direction. */
++  float ray_pdf_inv;
++  /** True if ray has hit valid geometry. */
++  bool is_hit;
++};
++
+ void encode_hit_data(HitData data, vec3 hit_sP, vec3 vP, out vec4 hit_data, out float hit_depth)
+ {
+   vec3 hit_vP = get_view_space_from_depth(hit_sP.xy, hit_sP.z);
+@@ -34,6 +45,16 @@ void encode_hit_data(HitData data, vec3 hit_sP, vec3 vP, out vec4 hit_data, out
+   hit_data.w = data.ray_pdf_inv * ((data.is_hit) ? 1.0 : -1.0);
+ }
+ 
++void ssgi_encode_hit_data(SsgiHitData data, vec3 hit_sP, vec3 vP, out vec4 hit_data, out float hit_depth)
++{
++  vec3 hit_vP = get_view_space_from_depth(hit_sP.xy, hit_sP.z);
++  hit_data.xyz = hit_vP - vP;
++  hit_depth = hit_sP.z;
++  /* Record 1.0 / pdf to reduce the computation in the resolve phase. */
++  /* Encode hit validity in sign. */
++  hit_data.w = data.ray_pdf_inv * ((data.is_hit) ? 1.0 : -1.0);
++}
++
+ HitData decode_hit_data(vec4 hit_data, float hit_depth)
+ {
+   HitData data;
+@@ -45,6 +66,16 @@ HitData decode_hit_data(vec4 hit_data, float hit_depth)
+   return data;
+ }
+ 
++SsgiHitData ssgi_decode_hit_data(vec4 hit_data, float hit_depth)
++{
++  SsgiHitData data;
++  data.hit_dir.xyz = hit_data.xyz;
++  data.hit_depth = hit_depth;
++  data.ray_pdf_inv = abs(hit_data.w);
++  data.is_hit = (hit_data.w > 0.0);
++  return data;
++}
++
+ /* Blue noise categorized into 4 sets of samples.
+  * See "Stochastic all the things" presentation slide 32-37. */
+ #define resolve_samples_count 9
+diff --git a/source/blender/draw/engines/eevee/shaders/effect_ssgi_filter_frag.glsl b/source/blender/draw/engines/eevee/shaders/effect_ssgi_filter_frag.glsl
+new file mode 100644
+index 00000000..2bdcfd1c
+--- /dev/null
++++ b/source/blender/draw/engines/eevee/shaders/effect_ssgi_filter_frag.glsl
+@@ -0,0 +1,203 @@
++
++#pragma BLENDER_REQUIRE(common_math_lib.glsl)
++#pragma BLENDER_REQUIRE(common_math_geom_lib.glsl)
++#pragma BLENDER_REQUIRE(common_colorpacking_lib.glsl)
++#pragma BLENDER_REQUIRE(closure_eval_glossy_lib.glsl)   
++#pragma BLENDER_REQUIRE(closure_eval_lib.glsl)
++#pragma BLENDER_REQUIRE(lightprobe_lib.glsl)
++#pragma BLENDER_REQUIRE(bsdf_common_lib.glsl)
++#pragma BLENDER_REQUIRE(surface_lib.glsl)
++#pragma BLENDER_REQUIRE(effect_reflection_lib.glsl)
++
++/* 
++https://jo.dreggn.org/home/2010_atrous.pdf
++https://www.shadertoy.com/view/ldKBzG
++*/
++
++#define KERNEL_SIZE 25
++uniform float kernel[KERNEL_SIZE];
++uniform vec2 offset[KERNEL_SIZE];
++
++float map(float value, float min1, float max1, float min2, float max2) {
++  return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
++}
++
++vec3 doAtrous (in vec2 uv, sampler2D source)
++{
++  vec2 offset[25];
++  offset[0] = vec2(-2,-2);
++  offset[1] = vec2(-1,-2);
++  offset[2] = vec2(0,-2);
++  offset[3] = vec2(1,-2);
++  offset[4] = vec2(2,-2);
++  
++  offset[5] = vec2(-2,-1);
++  offset[6] = vec2(-1,-1);
++  offset[7] = vec2(0,-1);
++  offset[8] = vec2(1,-1);
++  offset[9] = vec2(2,-1);
++  
++  offset[10] = vec2(-2,0);
++  offset[11] = vec2(-1,0);
++  offset[12] = vec2(0,0);
++  offset[13] = vec2(1,0);
++  offset[14] = vec2(2,0);
++  
++  offset[15] = vec2(-2,1);
++  offset[16] = vec2(-1,1);
++  offset[17] = vec2(0,1);
++  offset[18] = vec2(1,1);
++  offset[19] = vec2(2,1);
++  
++  offset[20] = vec2(-2,2);
++  offset[21] = vec2(-1,2);
++  offset[22] = vec2(0,2);
++  offset[23] = vec2(1,2);
++  offset[24] = vec2(2,2);
++
++  float kernel[25]; //precalculate
++  // kernel[0] = 1.0f/256.0f;
++  // kernel[1] = 1.0f/64.0f;
++  // kernel[2] = 3.0f/128.0f;
++  // kernel[3] = 1.0f/64.0f;
++  // kernel[4] = 1.0f/256.0f;
++  
++  // kernel[5] = 1.0f/64.0f;
++  // kernel[6] = 1.0f/16.0f;
++  // kernel[7] = 3.0f/32.0f;
++  // kernel[8] = 1.0f/16.0f;
++  // kernel[9] = 1.0f/64.0f;
++  
++  // kernel[10] = 3.0f/128.0f;
++  // kernel[11] = 3.0f/32.0f;
++  // kernel[12] = 9.0f/64.0f;
++  // kernel[13] = 3.0f/32.0f;
++  // kernel[14] = 3.0f/128.0f;
++  
++  // kernel[15] = 1.0f/64.0f;
++  // kernel[16] = 1.0f/16.0f;
++  // kernel[17] = 3.0f/32.0f;
++  // kernel[18] = 1.0f/16.0f;
++  // kernel[19] = 1.0f/64.0f;
++  
++  // kernel[20] = 1.0f/256.0f;
++  // kernel[21] = 1.0f/64.0f;
++  // kernel[22] = 3.0f/128.0f;
++  // kernel[23] = 1.0f/64.0f;
++  // kernel[24] = 1.0f/256.0f;
++
++  kernel[0] = 0.00390625f;
++  kernel[1] = 0.015625f;
++  kernel[2] = 0.0234375f;
++  kernel[3] = 0.015625f;
++  kernel[4] = 0.00390625f;
++  
++  kernel[5] = 0.015625f;
++  kernel[6] = 0.0625f;
++  kernel[7] = 0.09375f;
++  kernel[8] = 0.0625f;
++  kernel[9] = 0.015625f;
++  
++  kernel[10] = 0.0234375f;
++  kernel[11] = 0.09375f;
++  kernel[12] = 0.140625f;
++  kernel[13] = 0.09375f;
++  kernel[14] = 0.0234375f;
++  
++  kernel[15] = 0.015625f;
++  kernel[16] = 0.0625f;
++  kernel[17] = 0.09375f;
++  kernel[18] = 0.0625f;
++  kernel[19] = 0.015625f;
++  
++  kernel[20] = 0.00390625f;
++  kernel[21] = 0.015625f;
++  kernel[22] = 0.0234375f;
++  kernel[23] = 0.015625f;
++  kernel[24] = 0.00390625f;
++
++  /* input block */ //Could move some to uniforms
++  float sizevariance = map(samplePoolOffset, 0.0, 32.0, 0.0, 1.0); //rename samplePoolOffset to more appropriate in this case
++  //float sizevarianceinv = map(samplePoolOffset, 0.0, 256.0, 32.0, 1.0);
++  float c_phi = 1.0;
++  float n_phi = mix(1.0, 0.0002, ssrDiffuseFnweight);//  / sizevarianceinv;
++  float p_phi = mix(1.0, 0.0001, ssrDiffuseFdweight);// / sizevarianceinv;
++  float stepwidth = ssrDiffuseFsize / mix(1.0, 3.0, sizevariance);
++  /* input block end */
++
++  vec3 sum = vec3(0.0);
++  vec2 step = vec2(1/targetSize.x, 1/targetSize.y); // resolution
++
++  vec4 cval = texture(source, uv, 0).rgba;
++  vec4 nval = texture(normalBuffer, uv, 0).rgba;
++  vec4 pval = vec4(texture(maxzBuffer, (uv * hizUvScale.xy), 0).r);
++  pval = pval * pval; // Depth Squared
++  //AO weight
++  float aoweight = 0.1 * ssrDiffuseFaoweight;
++  vec4 difcol_roughness = vec4(texture(ssgiInputBuffer, uv, 0).a); //TODO Clean Up
++  vec4 aoval = vec4(difcol_roughness.a) * aoweight;
++
++  float cum_w = 0.0;
++    for(int i = 0; i < KERNEL_SIZE; i++) {
++
++    vec2 uv_s = uv + offset[i]*step*stepwidth;
++
++    vec4 ctmp = texture(source, uv_s, 0).rgba;
++    vec4 t = cval - ctmp;
++    float dist2 = dot(t,t);
++    float c_w = min(exp(-(dist2)/c_phi), 1.0);
++
++    vec4 ntmp = texture(normalBuffer, uv_s, 0).rgba; //Norm - vec3
++    t = nval - ntmp;
++    dist2 = max(dot(t,t)/(stepwidth*stepwidth),0.0); //?? //dist2 = max(dot(t,t), 0.0); 
++    float n_w = min(exp(-(dist2)/n_phi), 1.0);
++
++    vec4 ptmp =  vec4(texture(maxzBuffer, (uv_s * hizUvScale.xy), 0).r);
++    ptmp = ptmp * ptmp; // Depth Squared
++    t = pval - ptmp;
++    dist2 = dot(t,t);
++    float p_w = min(exp(-(dist2)/p_phi),1.0);
++
++    //AO Weight
++    difcol_roughness = vec4(texture(ssgiInputBuffer, uv_s, 0).a); //TODO Clean Up
++    vec4 aotmp = vec4(difcol_roughness.a) * aoweight;
++    t = aoval - aotmp;
++    dist2 = dot(t,t);
++    float ao_w = min(exp(-(dist2)/p_phi),1.0);
++
++    float weight = c_w * n_w * p_w * ao_w * kernel[i];
++
++    sum += ctmp.rgb * weight;
++    cum_w += weight;
++  }
++  return (sum/cum_w).rgb;
++}
++
++ void main()
++ {
++  /* Do toggle out of shader */
++  if (ssrDiffuseFilter == 0.0) {
++    discard;
++  }
++
++  float depth = textureLod(maxzBuffer, uvcoordsvar.xy * hizUvScale.xy, 0.0).r;
++
++  if (depth == 1.0) {
++    discard;
++  }
++
++  ivec2 texel = ivec2(gl_FragCoord.xy);
++  vec4 difcol_roughness = texelFetch(ssgiInputBuffer, texel, 0).rgba;
++
++  if (max_v3(difcol_roughness.rgb) <= 0.0) {
++    discard;
++  }
++
++
++
++  vec4 filtered = vec4(0.0);
++  if (samplePoolOffset > ssrDiffuseFsamples) {
++    filtered = vec4(doAtrous(uvcoordsvar.xy, ssgiFilterInput), 1.0);
++  }
++  ssgiFilterSecInput = filtered;
++ }
+\ No newline at end of file
+diff --git a/source/blender/draw/engines/eevee/shaders/effect_ssgi_filter_sec_frag.glsl b/source/blender/draw/engines/eevee/shaders/effect_ssgi_filter_sec_frag.glsl
+new file mode 100644
+index 00000000..162bf37b
+--- /dev/null
++++ b/source/blender/draw/engines/eevee/shaders/effect_ssgi_filter_sec_frag.glsl
+@@ -0,0 +1,193 @@
++
++#pragma BLENDER_REQUIRE(common_math_lib.glsl)
++#pragma BLENDER_REQUIRE(common_math_geom_lib.glsl)
++#pragma BLENDER_REQUIRE(common_colorpacking_lib.glsl)
++#pragma BLENDER_REQUIRE(closure_eval_glossy_lib.glsl)
++#pragma BLENDER_REQUIRE(closure_eval_lib.glsl)
++#pragma BLENDER_REQUIRE(lightprobe_lib.glsl)
++#pragma BLENDER_REQUIRE(bsdf_common_lib.glsl)
++#pragma BLENDER_REQUIRE(surface_lib.glsl)
++#pragma BLENDER_REQUIRE(effect_reflection_lib.glsl)
++
++/* 
++https://jo.dreggn.org/home/2010_atrous.pdf 
++https://www.shadertoy.com/view/ldKBzG
++*/
++
++#define KERNEL_SIZE 25
++uniform float kernel[KERNEL_SIZE];
++uniform vec2 offset[KERNEL_SIZE];
++
++float map(float value, float min1, float max1, float min2, float max2) {
++  return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
++}
++
++vec3 doAtrous (in vec2 uv, sampler2D source)
++{
++  vec2 offset[25];
++  offset[0] = vec2(-2,-2);
++  offset[1] = vec2(-1,-2);
++  offset[2] = vec2(0,-2);
++  offset[3] = vec2(1,-2);
++  offset[4] = vec2(2,-2);
++  
++  offset[5] = vec2(-2,-1);
++  offset[6] = vec2(-1,-1);
++  offset[7] = vec2(0,-1);
++  offset[8] = vec2(1,-1);
++  offset[9] = vec2(2,-1);
++  
++  offset[10] = vec2(-2,0);
++  offset[11] = vec2(-1,0);
++  offset[12] = vec2(0,0);
++  offset[13] = vec2(1,0);
++  offset[14] = vec2(2,0);
++  
++  offset[15] = vec2(-2,1);
++  offset[16] = vec2(-1,1);
++  offset[17] = vec2(0,1);
++  offset[18] = vec2(1,1);
++  offset[19] = vec2(2,1);
++  
++  offset[20] = vec2(-2,2);
++  offset[21] = vec2(-1,2);
++  offset[22] = vec2(0,2);
++  offset[23] = vec2(1,2);
++  offset[24] = vec2(2,2);
++
++  float kernel[25];
++  kernel[0] = 0.00390625f;
++  kernel[1] = 0.015625f;
++  kernel[2] = 0.0234375f;
++  kernel[3] = 0.015625f;
++  kernel[4] = 0.00390625f;
++  
++  kernel[5] = 0.015625f;
++  kernel[6] = 0.0625f;
++  kernel[7] = 0.09375f;
++  kernel[8] = 0.0625f;
++  kernel[9] = 0.015625f;
++  
++  kernel[10] = 0.0234375f;
++  kernel[11] = 0.09375f;
++  kernel[12] = 0.140625f;
++  kernel[13] = 0.09375f;
++  kernel[14] = 0.0234375f;
++  
++  kernel[15] = 0.015625f;
++  kernel[16] = 0.0625f;
++  kernel[17] = 0.09375f;
++  kernel[18] = 0.0625f;
++  kernel[19] = 0.015625f;
++  
++  kernel[20] = 0.00390625f;
++  kernel[21] = 0.015625f;
++  kernel[22] = 0.0234375f;
++  kernel[23] = 0.015625f;
++  kernel[24] = 0.00390625f;
++
++  /* input block */ //Could move some to uniforms
++  float sizevariance = map(samplePoolOffset, 0.0, 32.0, 0.0, 1.0);  //rename samplePoolOffset to more appropriate in this case
++  //float sizevarianceinv = map(samplePoolOffset, 0.0, 256.0, 32.0, 1.0);
++  float c_phi = 1.0;
++  float n_phi = mix(1.0, 0.0002, ssrDiffuseFnweight);//  / sizevarianceinv;
++  float p_phi = mix(1.0, 0.0001, ssrDiffuseFdweight);// / sizevarianceinv;
++  float stepwidth = ssrDiffuseFsize / mix(1.0, 5.0, sizevariance);
++  /* input block end */
++
++  vec3 sum = vec3(0.0);
++  vec2 step = vec2(1/targetSize.x, 1/targetSize.y); // resolution
++
++  vec4 cval = texture(source, uv, 0).rgba;
++  vec4 nval = texture(normalBuffer, uv, 0).rgba;
++  vec4 pval = vec4(texture(maxzBuffer, (uv * hizUvScale.xy), 0).r);
++  pval = pval * pval; // Depth Squared
++  //AO weight
++  float aoweight = 0.01 * ssrDiffuseFaoweight;
++  vec4 difcol_roughness  = vec4(texture(ssgiInputBuffer, uv, 0).a); //TODO Clean Up
++  vec4 aoval = vec4(difcol_roughness.a) * aoweight;
++
++  float cum_w = 0.0;
++    for(int i = 0; i < KERNEL_SIZE; i++) {
++
++    vec2 uv_s = uv + offset[i]*step*stepwidth;
++
++    vec4 ctmp = texture(source, uv_s, 0).rgba;
++    vec4 t = cval - ctmp;
++    float dist2 = dot(t,t);
++    float c_w = min(exp(-(dist2)/c_phi), 1.0);
++
++    vec4 ntmp = texture(normalBuffer, uv_s, 0).rgba; //Norm - vec3
++    t = nval - ntmp;
++    dist2 = max(dot(t,t)/(stepwidth*stepwidth),0.0); //?? //dist2 = max(dot(t,t), 0.0); 
++    float n_w = min(exp(-(dist2)/n_phi), 1.0);
++
++    vec4 ptmp =  vec4(texture(maxzBuffer, (uv_s * hizUvScale.xy), 0).r);
++    ptmp = ptmp * ptmp; // Depth Squared
++    t = pval - ptmp;
++    dist2 = dot(t,t);
++    float p_w = min(exp(-(dist2)/p_phi),1.0);
++
++    //AO Weight
++    difcol_roughness  = vec4(texture(ssgiInputBuffer, uv_s, 0).a); //TODO Clean Up
++    vec4 aotmp = vec4(difcol_roughness.a) * aoweight;
++    t = aoval - aotmp;
++    dist2 = dot(t,t);
++    float ao_w = min(exp(-(dist2)/p_phi),1.0);
++
++    float weight = c_w * n_w * p_w * ao_w * kernel[i];
++
++    sum += ctmp.rgb * weight;
++    cum_w += weight;
++  }
++  return mix((sum/cum_w).rgb, cval.rgb, 0.2);
++}
++
++ void main()
++ {
++  float depth = textureLod(maxzBuffer, uvcoordsvar.xy * hizUvScale.xy, 0.0).r;
++
++  if (depth == 1.0) {
++    discard;
++  }
++
++  ivec2 texel = ivec2(gl_FragCoord.xy);
++  vec4 difcol_roughness  = texelFetch(ssgiInputBuffer, texel, 0).rgba;
++
++  if (max_v3(difcol_roughness.rgb) <= 0.0) {
++    discard;
++  }
++
++  //vec2 texture_size = vec2(textureSize(ssgiHitBuffer, 0)); // TODO fix half res trace output
++  vec3 prefilter = texture(ssgiFilterInput, uvcoordsvar.xy).rgb;
++
++  /* Do toggle out of shader */
++  if (ssrDiffuseFilter > 0.0 && samplePoolOffset > ssrDiffuseFsamples) {
++    vec4 filtered = vec4(0.0);
++    filtered = vec4(doAtrous(uvcoordsvar.xy, ssgiFilterSecInput), 1.0);
++
++    /* gi * albedo * AO * intensity */
++
++    fragColor = vec4(
++      mix(prefilter.rgb, filtered.rgb, ssrDiffuseFilter) //GI output raw/denoised mix
++      * 
++      difcol_roughness.rgb //albedo
++      *
++      mix(1.0, map(difcol_roughness.a, 0.0, 1.0, ssrDiffuseAoLimit, 1.0), ssrDiffuseAo) //AO
++      *
++      ssrDiffuseIntensity //Master intensity
++      ,1.0);
++
++  }
++  else {
++    fragColor = vec4(
++      prefilter.rgb //Unfiltered GI
++      *
++      difcol_roughness.rgb //albedo
++      *
++      mix(1.0, map(difcol_roughness.a, 0.0, 1.0, ssrDiffuseAoLimit, 1.0), ssrDiffuseAo) //AO
++      *
++      ssrDiffuseIntensity //Master intensity
++      , 1.0);
++  }
++ }
+diff --git a/source/blender/draw/engines/eevee/shaders/effect_ssgi_resolve_frag.glsl b/source/blender/draw/engines/eevee/shaders/effect_ssgi_resolve_frag.glsl
+new file mode 100644
+index 00000000..392a2598
+--- /dev/null
++++ b/source/blender/draw/engines/eevee/shaders/effect_ssgi_resolve_frag.glsl
+@@ -0,0 +1,275 @@
++
++#pragma BLENDER_REQUIRE(common_math_lib.glsl)
++#pragma BLENDER_REQUIRE(common_math_geom_lib.glsl)
++#pragma BLENDER_REQUIRE(closure_eval_glossy_lib.glsl)
++#pragma BLENDER_REQUIRE(closure_eval_lib.glsl)
++#pragma BLENDER_REQUIRE(lightprobe_lib.glsl)
++#pragma BLENDER_REQUIRE(bsdf_common_lib.glsl)
++#pragma BLENDER_REQUIRE(surface_lib.glsl)
++#pragma BLENDER_REQUIRE(effect_reflection_lib.glsl)
++#pragma BLENDER_REQUIRE(common_colorpacking_lib.glsl)
++
++/* Based on:
++ * "Stochastic Screen Space Reflections"
++ * by Tomasz Stachowiak.
++ * https://www.ea.com/frostbite/news/stochastic-screen-space-reflections
++ * and
++ * "Stochastic all the things: raytracing in hybrid real-time rendering"
++ * by Tomasz Stachowiak.
++ * https://media.contentapi.ea.com/content/dam/ea/seed/presentations/dd18-seed-raytracing-in-hybrid-real-time-rendering.pdf
++ * and
++ * adapted to do diffuse reflections only, based on the default Eevee SSR implementation.
++ */
++
++vec4 ssgi_get_scene_color_and_mask(vec3 hit_vP, float mip)
++{
++  vec2 uv;
++  /* Find hit position in previous frame. */
++  /* TODO Combine matrices. */
++  vec3 hit_P = transform_point(ViewMatrixInverse, hit_vP);
++  /* TODO real reprojection with motion vectors, etc... */
++  uv = project_point(pastViewProjectionMatrix, hit_P).xy * 0.5 + 0.5;
++
++  vec3 color;
++  color = textureLod(colorBuffer, uv * hizUvScale.xy, mip).rgb;
++
++  /* Clamped brightness. */
++  float luma = max_v3(color);
++  color *= 1.0 - max(0.0, luma - ssrDiffuseClamp) * safe_rcp(luma);
++
++  /* Edge fade mask */
++  //float mask = screen_border_mask(uv); //Temporarily disaled
++
++  //return vec4(color, mask);
++  return vec4(color, 0.0);
++}
++
++void resolve_reflection_sample(vec2 sample_uv,
++                               vec3 vP,
++                               vec3 vN,
++                               vec3 vV,
++                               vec3 V,
++                               vec3 P,
++                               vec3 N,
++                               inout float weight_accum,
++                               inout vec4 ssgi_accum)
++{
++  vec4 hit_data = texture(ssgiHitBuffer, sample_uv);
++  float hit_depth = texture(ssgiHitDepth, sample_uv).r;
++  SsgiHitData data = ssgi_decode_hit_data(hit_data, hit_depth);
++
++  float hit_dist = length(data.hit_dir);
++
++  /* Slide 54. */
++  // Ray hit weight
++  float bsdf = bsdf_ggx(vN, data.hit_dir / hit_dist, vV, 1.0);
++
++  float weight = bsdf * data.ray_pdf_inv;
++
++  /* Do not add light if ray has failed but still weight it. */ //Using to inject probe lighting
++   if (!data.is_hit) {
++    weight_accum += weight;
++
++    vec3 inject_normal = transform_direction(ViewMatrixInverse, data.hit_dir);
++
++
++    /*using fallback cubemap*/
++
++    //float depth = textureLod(maxzBuffer, uvcoordsvar.xy * hizUvScale.xy, 0.0).r;
++    //viewPosition = get_view_space_from_depth(uvcoordsvar.xy, depth);
++    //worldPosition = transform_point(ViewMatrixInverse, viewPosition);
++
++    vec4 cubemap_sample_probe = vec4(0.0);
++    if (ssrDiffuseProbeTrace > 0) {
++      fallback_cubemap_ssgi(inject_normal, P, cubemap_sample_probe);
++    }
++    vec3 cubemap_sample = cubemap_sample_probe.rgb;
++    /*clamping for noise reduction, intensity*/
++    cubemap_sample = clamp(cubemap_sample, vec3(0.0), vec3(ssrDiffuseProbeClamp));
++    cubemap_sample *= ssrDiffuseProbeIntensity;
++
++    // Ray Tracing Gems Chapter 25
++    // vec3 fireflyRejectionVariance(vec3 radiance, vec3 variance, vec3 shortMean, vec3 dev) //TODO //Consider at denoise
++    // {
++    //     vec3 dev = sqrt(max(1.0e-5, variance));
++    //     vec3 highThreshold = 0.1 + shortMean + dev * 8.0;
++    //     vec3 overflow = max(0.0, radiance - highThreshold);
++    //     return radiance - overflow;
++    // }
++
++    /*end*/
++
++
++
++    //ssgi_accum += vec4(cubemap_sample, 0.0) * ssrThickness * weight; //TODO!!! double check thickness
++    ssgi_accum += vec4(cubemap_sample, 0.0) * weight; 
++    return;
++
++  }
++
++
++  vec3 hit_vP = vP + data.hit_dir;
++
++  /* Precalculated */
++  //float cone_cos = 11.0352189249; //Unused
++  float cone_tan = 0.9958856386;
++
++  /* Compute cone footprint in screen space. */
++  float cone_footprint = hit_dist * cone_tan;
++  float homcoord = ProjectionMatrix[2][3] * hit_vP.z + ProjectionMatrix[3][3];
++  cone_footprint *= max(ProjectionMatrix[0][0], ProjectionMatrix[1][1]) / homcoord;
++  cone_footprint *= ssrDiffuseResolveBias * 0.5;
++  /* Estimate a cone footprint to sample a corresponding mipmap level. */
++  float mip = log2(cone_footprint * max_v2(vec2(textureSize(ssgiInputBuffer, 0))));
++
++  vec4 radiance_mask = ssgi_get_scene_color_and_mask(hit_vP, mip);
++
++  ssgi_accum += radiance_mask * weight;
++  weight_accum += weight;
++}
++
++/* NOTE(Metal): For Apple silicon GPUs executing this particular shader, by default, memory read
++ * pressure is high while ALU remains low. Packing the sample data into a smaller format balances
++ * this trade-off by reducing local shader register pressure and expensive memory look-ups into
++ * spilled local shader memory, resulting in an increase in performance of 20% for this shader. */
++#ifdef GPU_METAL
++#  define SAMPLE_STORAGE_TYPE uchar
++#  define pack_sample(x, y) uchar(((uchar(x + 2)) << uchar(3)) + (uchar(y + 2)))
++#  define unpack_sample(x) vec2((char(x) >> 3) - 2, (char(x) & 7) - 2)
++#else
++#  define SAMPLE_STORAGE_TYPE vec2
++#  define pack_sample(x, y) SAMPLE_STORAGE_TYPE(x, y)
++#  define unpack_sample(x) x
++#endif
++
++vec4 raytrace_resolve_diffuse(vec4 difcol_roughness, vec3 viewPosition, vec3 worldPosition, vec3 worldNormal, out vec4 ssgi_radiance)
++{
++/* Note: Reflection samples declared in function scope to avoid per-thread memory pressure on
++* tile-based GPUs e.g. Apple Silicon. */
++const SAMPLE_STORAGE_TYPE resolve_sample_offsets[36] = SAMPLE_STORAGE_TYPE[36](
++    /* Set 1. */
++    /* First Ring (2x2). */
++    pack_sample(0, 0),
++    /* Second Ring (6x6). */
++    pack_sample(-1, 3),
++    pack_sample(1, 3),
++    pack_sample(-1, 1),
++    pack_sample(3, 1),
++    pack_sample(-2, 0),
++    pack_sample(3, 0),
++    pack_sample(2, -1),
++    pack_sample(1, -2),
++    /* Set 2. */
++    /* First Ring (2x2). */
++    pack_sample(1, 1),
++    /* Second Ring (6x6). */
++    pack_sample(-2, 3),
++    pack_sample(3, 3),
++    pack_sample(0, 2),
++    pack_sample(2, 2),
++    pack_sample(-2, -1),
++    pack_sample(1, -1),
++    pack_sample(0, -2),
++    pack_sample(3, -2),
++    /* Set 3. */
++    /* First Ring (2x2). */
++    pack_sample(0, 1),
++    /* Second Ring (6x6). */
++    pack_sample(0, 3),
++    pack_sample(3, 2),
++    pack_sample(-2, 1),
++    pack_sample(2, 1),
++    pack_sample(-1, 0),
++    pack_sample(-2, -2),
++    pack_sample(0, -1),
++    pack_sample(2, -2),
++    /* Set 4. */
++    /* First Ring (2x2). */
++    pack_sample(1, 0),
++    /* Second Ring (6x6). */
++    pack_sample(2, 3),
++    pack_sample(-2, 2),
++    pack_sample(-1, 2),
++    pack_sample(1, 2),
++    pack_sample(2, 0),
++    pack_sample(-1, -1),
++    pack_sample(3, -1),
++    pack_sample(-1, -2));
++  /*metal fix end*/
++
++  vec4 ssgi_accum = vec4(0.0);
++  float weight_acc = 0.0;
++
++  vec3 V, P, N;
++
++  V = viewPosition;
++  P = worldPosition;
++  N = worldNormal;
++
++  /* Using view space */
++  vec3 vV = transform_direction(ViewMatrix, V);
++  vec3 vP = transform_point(ViewMatrix, P);
++  vec3 vN = transform_direction(ViewMatrix, N);
++
++  int sample_pool = int((uint(gl_FragCoord.x) & 1u) + (uint(gl_FragCoord.y) & 1u) * 2u);
++  sample_pool = (sample_pool + (samplePoolOffset / 5)) % 4;
++
++  for (int i = 0; i < resolve_samples_count; i++) {
++    int sample_id = sample_pool * resolve_samples_count + i;
++    vec2 texture_size = vec2(textureSize(ssgiHitBuffer, 0));
++    vec2 sample_texel = texture_size * uvcoordsvar.xy * ssrUvScale;
++    vec2 sample_uv = (sample_texel + unpack_sample(resolve_sample_offsets[sample_id])) / texture_size;
++
++    resolve_reflection_sample(
++        sample_uv, vP, vN, vV, V, P, N, weight_acc, ssgi_accum);
++  }
++
++  /* Compute SSGI contribution */
++  ssgi_accum *= safe_rcp(weight_acc);
++
++  /* multiply with mask */
++  ssgi_radiance.rgb = ssgi_accum.rgb * ssgi_accum.a;
++  ssgi_radiance.rgb = ssgi_accum.rgb;
++  //ssgi_accum -= ssgi_accum.a; //Leaving in for potentintial future use
++
++  ssgi_radiance = vec4(ssgi_radiance.rgb, 1.0);
++  return ssgi_radiance;
++}
++
++void main()
++{
++  if (ssrDiffuseIntensity == 0.0) { //Do check elsewhere
++    discard;
++  }
++
++  float depth = textureLod(maxzBuffer, uvcoordsvar.xy * hizUvScale.xy, 0.0).r;
++
++  if (depth == 1.0) {
++    discard;
++  }
++  //TODO add intel & metal exceptions
++
++  ivec2 texel = ivec2(gl_FragCoord.xy);
++  vec4 difcol_roughness = texelFetch(ssgiInputBuffer, texel, 0).rgba;
++
++  vec3 brdf = difcol_roughness.rgb * ssrDiffuseIntensity;
++
++  if (max_v3(brdf) <= 0.0) {
++    discard;
++  }
++
++  FragDepth = depth;
++
++  viewPosition = get_view_space_from_depth(uvcoordsvar.xy, depth);
++  worldPosition = transform_point(ViewMatrixInverse, viewPosition);
++
++  vec2 normal_encoded = texelFetch(normalBuffer, texel, 0).rg;
++  viewNormal = normal_decode(normal_encoded, viewCameraVec(viewPosition));
++  worldNormal = transform_direction(ViewMatrixInverse, viewNormal);
++
++  vec4 ssgi_radiance = vec4(0.0);
++  ssgi_radiance = raytrace_resolve_diffuse(difcol_roughness, viewPosition, worldPosition, worldNormal, ssgi_radiance);
++
++  //fragColor = vec4(ssgi_radiance.rgb * brdf, 1.0); //Unused going to filter stage instead
++  ssgiFilterInput = vec4(ssgi_radiance.rgb, 1.0); //Output to filter step
++}
+diff --git a/source/blender/draw/engines/eevee/shaders/effect_ssgi_trace_frag.glsl b/source/blender/draw/engines/eevee/shaders/effect_ssgi_trace_frag.glsl
+new file mode 100644
+index 00000000..5d46dbcb
+--- /dev/null
++++ b/source/blender/draw/engines/eevee/shaders/effect_ssgi_trace_frag.glsl
+@@ -0,0 +1,107 @@
++
++#pragma BLENDER_REQUIRE(common_math_lib.glsl)
++#pragma BLENDER_REQUIRE(common_math_geom_lib.glsl)
++#pragma BLENDER_REQUIRE(common_utiltex_lib.glsl)
++#pragma BLENDER_REQUIRE(raytrace_lib.glsl)
++#pragma BLENDER_REQUIRE(lightprobe_lib.glsl)
++#pragma BLENDER_REQUIRE(bsdf_sampling_lib.glsl)
++#pragma BLENDER_REQUIRE(effect_reflection_lib.glsl)
++#pragma BLENDER_REQUIRE(common_colorpacking_lib.glsl)
++
++/* Based on:
++ * "Stochastic Screen Space Reflections"
++ * by Tomasz Stachowiak.
++ * https://www.ea.com/frostbite/news/stochastic-screen-space-reflections
++ * and
++ * "Stochastic all the things: raytracing in hybrid real-time rendering"
++ * by Tomasz Stachowiak.
++ * https://media.contentapi.ea.com/content/dam/ea/seed/presentations/dd18-seed-raytracing-in-hybrid-real-time-rendering.pdf
++ * and
++ * adapted to do diffuse reflections only, based on the default Eevee SSR implementation.
++ */
++
++void main()
++{
++  if (ssrDiffuseIntensity == 0.0) { //TODO check out of shader
++    return;
++  }
++  vec4 rand = texelfetch_noise_tex(gl_FragCoord.xy);
++
++  /* Decorrelate from AA. */
++  vec2 random_px = floor(fract(rand.xy * 2.2074408460575947536) * 1.99999) - 0.8; //0.5
++  rand.xy = fract(rand.xy * 3.671795724474602596); //3.2471795724474602596
++
++  /* Randomly choose the pixel to start the ray from when tracing at lower resolution.
++  * This method also make sure we always start from the center of a fullres texel. */
++  vec2 uvs = (gl_FragCoord.xy + random_px * randomScale) / (targetSize * ssrUvScale);
++
++  float depth = textureLod(maxzBuffer, uvs * hizUvScale.xy, 0.0).r;
++
++  SsgiHitData data;
++  data.ray_pdf_inv = 0.0;
++  data.is_hit = false;
++  data.hit_dir = vec3(0.0, 0.0, 0.0);
++  /* Default: not hits. */
++  ssgi_encode_hit_data(data, data.hit_dir, data.hit_dir, ssgiHitData, ssgiHitDepth);
++
++  /* Early out - depth*/
++  /* We can't do discard because we don't clear the render target. */
++  if (depth == 1.0) {
++    return;
++  }
++
++  /* Using view space */
++  vec3 vP = get_view_space_from_depth(uvs, depth);
++  vec3 P = transform_point(ViewMatrixInverse, vP);
++  vec3 vV = viewCameraVec(vP);
++  vec3 V = cameraVec(P);
++  vec3 vN = normal_decode(texture(normalBuffer, uvs, 0).rg, vV);
++  vec3 N = transform_direction(ViewMatrixInverse, vN);
++
++  /* Retrieve pixel data */
++  vec4 difcol_roughness = texture(ssgiInputBuffer, uvs, 0).rgba;
++
++  /* Early out - bsdf */
++  if (dot(difcol_roughness.rgb, vec3(1.0)) == 0.0) {
++    return;
++  }
++
++  /* Importance sampling bias */
++  //rand.x = mix(rand.x, 0.0, ssrDiffuseDebug_h);
++
++  vec3 vT, vB;
++  make_orthonormal_basis(vN, vT, vB); /* Generate tangent space */
++
++
++
++
++
++  float pdf;
++  /* new GGX sampling */
++  vec3 vH = sample_ggx(rand.xzw, 1.0, vV, vN, vT, vB, pdf); //TODO cosine //arg 2 - alpha
++  vec3 vR = reflect(-vV, vH);
++
++
++  if (isnan(pdf)) {
++    /* Seems that somethings went wrong.
++     * This only happens on extreme cases where the normal deformed too much to have any valid
++     * reflections. */
++    return;
++  }
++
++  Ray ray;
++  ray.origin = vP;
++  ray.direction = vR * 1e16;
++
++  RayTraceParameters params;
++  params.thickness = ssrDiffuseThickness;
++  params.jitter = rand.y;
++  params.trace_quality = ssrDiffuseQuality;
++  params.roughness = 1.0;
++
++  vec3 hit_sP;
++  data.is_hit = raytrace(ray, params, true, false, hit_sP); //Add separate raytrace func?
++  data.ray_pdf_inv = safe_rcp(pdf);
++
++  ssgi_encode_hit_data(data, hit_sP, ray.origin, ssgiHitData, ssgiHitDepth);
++}
+diff --git a/source/blender/draw/engines/eevee/shaders/infos/eevee_legacy_effects_info.hh b/source/blender/draw/engines/eevee/shaders/infos/eevee_legacy_effects_info.hh
+index 2f6a5854..6d060076 100644
+--- a/source/blender/draw/engines/eevee/shaders/infos/eevee_legacy_effects_info.hh
++++ b/source/blender/draw/engines/eevee/shaders/infos/eevee_legacy_effects_info.hh
+@@ -205,6 +205,26 @@ GPU_SHADER_CREATE_INFO(eevee_legacy_effect_reflection_trace)
+     .auto_resource_location(true)
+     .do_static_compilation(true);
+ 
++/*    TRACE*/
++GPU_SHADER_CREATE_INFO(eevee_legacy_effect_ssgi_trace)
++    .additional_info("eevee_legacy_surface_lib_step_raytrace")
++    .additional_info("eevee_legacy_common_lib")
++    .additional_info("draw_view")
++    .additional_info("eevee_legacy_common_utiltex_lib")
++    .additional_info("eevee_legacy_raytrace_lib")
++    .additional_info("eevee_legacy_lightprobe_lib")
++    .additional_info("eevee_legacy_reflection_lib")
++    .additional_info("draw_fullscreen")
++    .sampler(0, ImageType::FLOAT_2D, "normalBuffer")
++    .sampler(1, ImageType::FLOAT_2D, "ssgiInputBuffer")
++    .push_constant(Type::VEC2, "targetSize")
++    .push_constant(Type::FLOAT, "randomScale")
++    .fragment_out(2, Type::VEC4, "ssgiHitData")
++    .fragment_out(3, Type::FLOAT, "ssgiHitDepth")
++    .fragment_source("effect_ssgi_trace_frag.glsl")
++    .auto_resource_location(true)
++    .do_static_compilation(true);
++
+ /* EEVEE_shaders_effect_reflection_resolve_sh_get */
+ GPU_SHADER_CREATE_INFO(eevee_legacy_effect_reflection_resolve)
+     .additional_info("eevee_legacy_surface_lib_step_resolve")
+@@ -227,6 +247,74 @@ GPU_SHADER_CREATE_INFO(eevee_legacy_effect_reflection_resolve)
+     .auto_resource_location(true)
+     .do_static_compilation(true);
+ 
++/*    RESOLVE*/
++GPU_SHADER_CREATE_INFO(eevee_legacy_effect_ssgi_resolve)
++    .additional_info("eevee_legacy_surface_lib_step_resolve")
++    .additional_info("eevee_legacy_common_lib")
++    .additional_info("draw_view")
++    .additional_info("eevee_legacy_common_utiltex_lib")
++    .additional_info("eevee_legacy_raytrace_lib")
++    .additional_info("eevee_legacy_lightprobe_lib")
++    .additional_info("eevee_legacy_reflection_lib")
++    .additional_info("eevee_legacy_closure_eval_glossy_lib")
++    .additional_info("draw_fullscreen")
++    .sampler(0, ImageType::FLOAT_2D, "colorBuffer")
++    .sampler(1, ImageType::FLOAT_2D, "normalBuffer")
++    .sampler(2, ImageType::FLOAT_2D, "ssgiInputBuffer")
++    .sampler(3, ImageType::FLOAT_2D, "ssgiHitBuffer")
++    .sampler(4, ImageType::FLOAT_2D, "ssgiHitDepth")
++    .push_constant(Type::INT, "samplePoolOffset")
++    .fragment_out(0, Type::VEC4, "fragColor")
++    .fragment_out(4, Type::VEC4, "ssgiFilterInput")
++    .fragment_source("effect_ssgi_resolve_frag.glsl")
++    .auto_resource_location(true)
++    .do_static_compilation(true);
++
++/*   FILTER A */
++GPU_SHADER_CREATE_INFO(eevee_legacy_effect_ssgi_filter)
++    .additional_info("eevee_legacy_surface_lib_step_resolve")
++    .additional_info("eevee_legacy_common_lib")
++    .additional_info("draw_view")
++    .additional_info("eevee_legacy_common_utiltex_lib")
++    .additional_info("eevee_legacy_raytrace_lib")
++    .additional_info("eevee_legacy_lightprobe_lib")
++    .additional_info("eevee_legacy_reflection_lib")
++    .additional_info("eevee_legacy_closure_eval_glossy_lib")
++    .additional_info("draw_fullscreen")
++    .sampler(0, ImageType::FLOAT_2D, "colorBuffer")
++    .sampler(1, ImageType::FLOAT_2D, "normalBuffer")
++    .sampler(2, ImageType::FLOAT_2D, "ssgiInputBuffer")
++    .sampler(3, ImageType::FLOAT_2D, "ssgiFilterInput")
++    .push_constant(Type::VEC2, "targetSize")
++    .push_constant(Type::INT, "samplePoolOffset") //  uniform vec2 resolveSize;
++    .fragment_out(5, Type::VEC4, "ssgiFilterSecInput")
++    .fragment_source("effect_ssgi_filter_frag.glsl")
++    .auto_resource_location(true)
++    .do_static_compilation(true);
++
++/*    FILTER B */
++GPU_SHADER_CREATE_INFO(eevee_legacy_effect_ssgi_filter_sec)
++    .additional_info("eevee_legacy_surface_lib_step_resolve")
++    .additional_info("eevee_legacy_common_lib")
++    .additional_info("draw_view")
++    .additional_info("eevee_legacy_common_utiltex_lib")
++    .additional_info("eevee_legacy_raytrace_lib")
++    .additional_info("eevee_legacy_lightprobe_lib")
++    .additional_info("eevee_legacy_reflection_lib")
++    .additional_info("eevee_legacy_closure_eval_glossy_lib")
++    .additional_info("draw_fullscreen")
++    .sampler(0, ImageType::FLOAT_2D, "colorBuffer")
++    .sampler(1, ImageType::FLOAT_2D, "normalBuffer")
++    .sampler(2, ImageType::FLOAT_2D, "ssgiInputBuffer")
++    .sampler(3, ImageType::FLOAT_2D, "ssgiFilterInput")
++    .sampler(4, ImageType::FLOAT_2D, "ssgiFilterSecInput")
++    .push_constant(Type::VEC2, "targetSize")
++    .push_constant(Type::INT, "samplePoolOffset") //  uniform vec2 resolveSize;
++    .fragment_out(0, Type::VEC4, "fragColor")
++    .fragment_source("effect_ssgi_filter_sec_frag.glsl")
++    .auto_resource_location(true)
++    .do_static_compilation(true);
++
+ /* Split reflection resolve support for Intel-based MacBooks. */
+ GPU_SHADER_CREATE_INFO(eevee_legacy_effect_reflection_resolve_probe)
+     .define("RESOLVE_PROBE")
+diff --git a/source/blender/draw/engines/eevee/shaders/infos/eevee_legacy_material_info.hh b/source/blender/draw/engines/eevee/shaders/infos/eevee_legacy_material_info.hh
+index 5cd18eae..c76d2426 100644
+--- a/source/blender/draw/engines/eevee/shaders/infos/eevee_legacy_material_info.hh
++++ b/source/blender/draw/engines/eevee/shaders/infos/eevee_legacy_material_info.hh
+@@ -197,7 +197,8 @@ GPU_SHADER_CREATE_INFO(eevee_legacy_material_surface_frag_opaque)
+     .fragment_out(2, Type::VEC4, "ssrData")
+     .fragment_out(3, Type::VEC3, "sssIrradiance")
+     .fragment_out(4, Type::FLOAT, "sssRadius")
+-    .fragment_out(5, Type::VEC3, "sssAlbedo");
++    .fragment_out(5, Type::VEC3, "sssAlbedo")
++    .fragment_out(6, Type::VEC4, "ssgiInput");
+ 
+ GPU_SHADER_CREATE_INFO(eevee_legacy_material_surface_frag_alpha_blend)
+     .define("USE_ALPHA_BLEND")
+diff --git a/source/blender/draw/engines/eevee/shaders/infos/engine_eevee_legacy_shared.h b/source/blender/draw/engines/eevee/shaders/infos/engine_eevee_legacy_shared.h
+index 6503a97a..ecb4e7ec 100644
+--- a/source/blender/draw/engines/eevee/shaders/infos/engine_eevee_legacy_shared.h
++++ b/source/blender/draw/engines/eevee/shaders/infos/engine_eevee_legacy_shared.h
+@@ -68,6 +68,28 @@ struct CommonUniformBlock {
+   float _alphaHashScale;
+   vec4 _cameraUvScaleBias;
+   vec4 _planarClipPlane;
++  /*SSGI*/
++  float _ssrDiffuseVersioning;
++  float _ssrDiffuseIntensity;
++  float _ssrDiffuseThickness;
++  float _ssrDiffuseResolveBias;
++  float _ssrDiffuseQuality;
++  float _ssrDiffuseClamp;
++  float _ssrDiffuseAo;
++  float _ssrDiffuseAoLimit;
++  int _ssrDiffuseProbeTrace;
++  float _ssrDiffuseProbeIntensity;
++  float _ssrDiffuseProbeClamp;
++  float _ssrDiffuseFilter;
++  float _ssrDiffuseFsize;
++  int _ssrDiffuseFsamples;
++  float _ssrDiffuseFnweight;
++  float _ssrDiffuseFdweight;
++  float _ssrDiffuseFaoweight;
++  float _ssrDiffuseDebugA;
++  float _ssrDiffuseDebugB;
++  float _ssrDiffuseDebugC;
++  float _ssrDiffuseDebugD;
+ };
+ BLI_STATIC_ASSERT_ALIGN(CommonUniformBlock, 16)
+ 
+@@ -229,6 +251,27 @@ BLI_STATIC_ASSERT_ALIGN(SSSProfileBlock, 16)
+ #    define alphaHashScale common_block._alphaHashScale
+ #    define cameraUvScaleBias common_block._cameraUvScaleBias
+ #    define planarClipPlane common_block._planarClipPlane
++#    define ssrDiffuseVersioning common_block._ssrDiffuseVersioning
++#    define ssrDiffuseIntensity common_block._ssrDiffuseIntensity
++#    define ssrDiffuseThickness common_block._ssrDiffuseThickness
++#    define ssrDiffuseResolveBias common_block._ssrDiffuseResolveBias
++#    define ssrDiffuseQuality common_block._ssrDiffuseQuality
++#    define ssrDiffuseClamp common_block._ssrDiffuseClamp
++#    define ssrDiffuseAo common_block._ssrDiffuseAo
++#    define ssrDiffuseAoLimit common_block._ssrDiffuseAoLimit
++#    define ssrDiffuseProbeTrace common_block._ssrDiffuseProbeTrace
++#    define ssrDiffuseProbeIntensity common_block._ssrDiffuseProbeIntensity
++#    define ssrDiffuseProbeClamp common_block._ssrDiffuseProbeClamp
++#    define ssrDiffuseFilter common_block._ssrDiffuseFilter
++#    define ssrDiffuseFsize common_block._ssrDiffuseFsize
++#    define ssrDiffuseFsamples common_block._ssrDiffuseFsamples
++#    define ssrDiffuseFnweight common_block._ssrDiffuseFnweight
++#    define ssrDiffuseFdweight common_block._ssrDiffuseFdweight
++#    define ssrDiffuseFaoweight common_block._ssrDiffuseFaoweight
++#    define ssrDiffuseDebugA common_block._ssrDiffuseDebugA
++#    define ssrDiffuseDebugB common_block._ssrDiffuseDebugB
++#    define ssrDiffuseDebugC common_block._ssrDiffuseDebugC
++#    define ssrDiffuseDebugD common_block._ssrDiffuseDebugD
+ 
+ /* ProbeBlock */
+ #    define probes_data probe_block._probes_data
+diff --git a/source/blender/draw/engines/eevee/shaders/lightprobe_lib.glsl b/source/blender/draw/engines/eevee/shaders/lightprobe_lib.glsl
+index 23bffffd..0943d25a 100644
+--- a/source/blender/draw/engines/eevee/shaders/lightprobe_lib.glsl
++++ b/source/blender/draw/engines/eevee/shaders/lightprobe_lib.glsl
+@@ -1,296 +1,353 @@
+-
+-#pragma BLENDER_REQUIRE(engine_eevee_legacy_shared.h)
+-#pragma BLENDER_REQUIRE(common_math_geom_lib.glsl)
+-#pragma BLENDER_REQUIRE(common_view_lib.glsl)
+-#pragma BLENDER_REQUIRE(common_utiltex_lib.glsl)
+-#pragma BLENDER_REQUIRE(common_uniforms_lib.glsl)
+-#pragma BLENDER_REQUIRE(cubemap_lib.glsl)
+-#pragma BLENDER_REQUIRE(ambient_occlusion_lib.glsl)
+-#pragma BLENDER_REQUIRE(irradiance_lib.glsl)
+-
+-/* ----------- Uniforms --------- */
+-
+-#if !defined(USE_GPU_SHADER_CREATE_INFO)
+-
+-uniform sampler2DArray probePlanars;
+-uniform samplerCubeArray probeCubes;
+-
+-#endif
+-
+-/* ----------- Structures --------- */
+-
+-#define PROBE_PARALLAX_BOX 1.0
+-#define PROBE_ATTENUATION_BOX 1.0
+-
+-#define p_position position_type.xyz
+-#define p_parallax_type position_type.w
+-#define p_atten_fac attenuation_fac_type.x
+-#define p_atten_type attenuation_fac_type.y
+-
+-#define pl_plane_eq plane_equation
+-#define pl_normal plane_equation.xyz
+-#define pl_facing_scale facing_scale_bias.x
+-#define pl_facing_bias facing_scale_bias.y
+-#define pl_fade_scale clip_vec_x_fade_scale.w
+-#define pl_fade_bias clip_vec_y_fade_bias.w
+-#define pl_clip_pos_x clip_vec_x_fade_scale.xyz
+-#define pl_clip_pos_y clip_vec_y_fade_bias.xyz
+-#define pl_clip_edges clip_edges
+-
+-#define g_corner ws_corner_atten_scale.xyz
+-#define g_atten_scale ws_corner_atten_scale.w
+-#define g_atten_bias ws_increment_x_atten_bias.w
+-#define g_level_bias ws_increment_y_lvl_bias.w
+-#define g_increment_x ws_increment_x_atten_bias.xyz
+-#define g_increment_y ws_increment_y_lvl_bias.xyz
+-#define g_increment_z ws_increment_z.xyz
+-#define g_resolution resolution_offset.xyz
+-#define g_offset resolution_offset.w
+-#define g_vis_bias vis_bias_bleed_range.x
+-#define g_vis_bleed vis_bias_bleed_range.y
+-#define g_vis_range vis_bias_bleed_range.z
+-
+-#ifndef MAX_PROBE
+-#  define MAX_PROBE 1
+-#endif
+-#ifndef MAX_GRID
+-#  define MAX_GRID 1
+-#endif
+-#ifndef MAX_PLANAR
+-#  define MAX_PLANAR 1
+-#endif
+-
+-#if !defined(USE_GPU_SHADER_CREATE_INFO)
+-
+-layout(std140) uniform probe_block
+-{
+-  ProbeBlock _probe_block;
+-};
+-
+-layout(std140) uniform grid_block
+-{
+-  GridBlock _grid_block;
+-};
+-
+-layout(std140) uniform planar_block
+-{
+-  PlanarBlock _planar_block;
+-};
+-
+-#  define probes_data _probe_block.probes_data
+-#  define grids_data _grid_block.grids_data
+-#  define planars_data _planar_block.planars_data
+-
+-#endif
+-/* ----------- Functions --------- */
+-
+-float probe_attenuation_cube(int pd_id, vec3 P)
+-{
+-  vec3 localpos = transform_point(probes_data[pd_id].influencemat, P);
+-
+-  float probe_atten_fac = probes_data[pd_id].p_atten_fac;
+-  float fac;
+-  if (probes_data[pd_id].p_atten_type == PROBE_ATTENUATION_BOX) {
+-    vec3 axes_fac = saturate(probe_atten_fac - probe_atten_fac * abs(localpos));
+-    fac = min_v3(axes_fac);
+-  }
+-  else {
+-    fac = saturate(probe_atten_fac - probe_atten_fac * length(localpos));
+-  }
+-
+-  return fac;
+-}
+-
+-float probe_attenuation_planar(PlanarData pd, vec3 P)
+-{
+-  /* Distance from plane */
+-  float fac = saturate(abs(dot(pd.pl_plane_eq, vec4(P, 1.0))) * pd.pl_fade_scale +
+-                       pd.pl_fade_bias);
+-  /* Fancy fast clipping calculation */
+-  vec2 dist_to_clip;
+-  dist_to_clip.x = dot(pd.pl_clip_pos_x, P);
+-  dist_to_clip.y = dot(pd.pl_clip_pos_y, P);
+-  /* compare and add all tests */
+-  fac *= step(2.0, dot(step(pd.pl_clip_edges, dist_to_clip.xxyy), vec2(-1.0, 1.0).xyxy));
+-  return fac;
+-}
+-
+-float probe_attenuation_planar_normal_roughness(PlanarData pd, vec3 N, float roughness)
+-{
+-  /* Normal Facing */
+-  float fac = saturate(dot(pd.pl_normal, N) * pd.pl_facing_scale + pd.pl_facing_bias);
+-  /* Decrease influence for high roughness */
+-  return fac * saturate(1.0 - roughness * 10.0);
+-}
+-
+-float probe_attenuation_grid(GridData gd, vec3 P, out vec3 localpos)
+-{
+-  localpos = transform_point(gd.localmat, P);
+-  vec3 pos_to_edge = max(vec3(0.0), abs(localpos) - 1.0);
+-  float fade = length(pos_to_edge);
+-  return saturate(-fade * gd.g_atten_scale + gd.g_atten_bias);
+-}
+-
+-vec3 probe_evaluate_cube(int pd_id, vec3 P, vec3 R, float roughness)
+-{
+-  /* Correct reflection ray using parallax volume intersection. */
+-  vec3 localpos = transform_point(probes_data[pd_id].parallaxmat, P);
+-  vec3 localray = transform_direction(probes_data[pd_id].parallaxmat, R);
+-
+-  float dist;
+-  if (probes_data[pd_id].p_parallax_type == PROBE_PARALLAX_BOX) {
+-    dist = line_unit_box_intersect_dist(localpos, localray);
+-  }
+-  else {
+-    dist = line_unit_sphere_intersect_dist(localpos, localray);
+-  }
+-
+-  /* Use Distance in WS directly to recover intersection */
+-  vec3 intersection = P + R * dist - probes_data[pd_id].p_position;
+-
+-  /* From Frostbite PBR Course
+-   * Distance based roughness
+-   * http://www.frostbite.com/wp-content/uploads/2014/11/course_notes_moving_frostbite_to_pbr.pdf
+-   */
+-  float original_roughness = roughness;
+-  float linear_roughness = fast_sqrt(roughness);
+-  float distance_roughness = saturate(dist * linear_roughness / length(intersection));
+-  linear_roughness = mix(distance_roughness, linear_roughness, linear_roughness);
+-  roughness = linear_roughness * linear_roughness;
+-
+-  float fac = saturate(original_roughness * 2.0 - 1.0);
+-  R = mix(intersection, R, fac * fac);
+-
+-  float lod = linear_roughness * prbLodCubeMax;
+-  return textureLod_cubemapArray(probeCubes, vec4(R, float(pd_id)), lod).rgb;
+-}
+-
+-vec3 probe_evaluate_world_spec(vec3 R, float roughness)
+-{
+-  float lod = fast_sqrt(roughness) * prbLodCubeMax;
+-  return textureLod_cubemapArray(probeCubes, vec4(R, 0.0), lod).rgb;
+-}
+-
+-vec3 probe_evaluate_planar(int id, PlanarData pd, vec3 P, vec3 N, vec3 V, float roughness)
+-{
+-  /* Find view vector / reflection plane intersection. */
+-  vec3 point_on_plane = line_plane_intersect(P, V, pd.pl_plane_eq);
+-
+-  /* How far the pixel is from the plane. */
+-  float ref_depth = 1.0; /* TODO: parameter. */
+-
+-  /* Compute distorded reflection vector based on the distance to the reflected object.
+-   * In other words find intersection between reflection vector and the sphere center
+-   * around point_on_plane. */
+-  vec3 proj_ref = reflect(reflect(-V, N) * ref_depth, pd.pl_normal);
+-
+-  /* Final point in world space. */
+-  vec3 ref_pos = point_on_plane + proj_ref;
+-
+-  /* Reproject to find texture coords. */
+-  vec4 refco = ProjectionMatrix * (ViewMatrix * vec4(ref_pos, 1.0));
+-  refco.xy /= refco.w;
+-
+-  /* TODO: If we support non-SSR planar reflection, we should blur them with gaussian
+-   * and chose the right mip depending on the cone footprint after projection */
+-  /* NOTE: X is inverted here to compensate inverted drawing. */
+-  vec3 radiance = textureLod(probePlanars, vec3(refco.xy * vec2(-0.5, 0.5) + 0.5, id), 0.0).rgb;
+-
+-  return radiance;
+-}
+-
+-void fallback_cubemap(vec3 N,
+-                      vec3 V,
+-                      vec3 P,
+-                      vec3 vP,
+-                      float roughness,
+-                      float roughnessSquared,
+-                      inout vec4 spec_accum)
+-{
+-  /* Specular probes */
+-  vec3 spec_dir = specular_dominant_dir(N, V, roughnessSquared);
+-
+-  OcclusionData occlusion_data = occlusion_load(vP, 1.0);
+-  float final_ao = specular_occlusion(occlusion_data, V, N, roughness, spec_dir);
+-
+-  /* Starts at 1 because 0 is world probe */
+-  for (int i = 1; i < MAX_PROBE && i < prbNumRenderCube && spec_accum.a < 0.999; i++) {
+-    float fade = probe_attenuation_cube(i, P);
+-
+-    if (fade > 0.0) {
+-      vec3 spec = final_ao * probe_evaluate_cube(i, P, spec_dir, roughness);
+-      accumulate_light(spec, fade, spec_accum);
+-    }
+-  }
+-
+-  /* World Specular */
+-  if (spec_accum.a < 0.999) {
+-    vec3 spec = final_ao * probe_evaluate_world_spec(spec_dir, roughness);
+-    accumulate_light(spec, 1.0, spec_accum);
+-  }
+-}
+-
+-vec3 probe_evaluate_grid(GridData gd, vec3 P, vec3 N, vec3 localpos)
+-{
+-  localpos = localpos * 0.5 + 0.5;
+-  localpos = localpos * vec3(gd.g_resolution) - 0.5;
+-
+-  vec3 localpos_floored = floor(localpos);
+-  vec3 trilinear_weight = fract(localpos);
+-
+-  float weight_accum = 0.0;
+-  vec3 irradiance_accum = vec3(0.0);
+-
+-  /* For each neighbor cells */
+-  for (int i = 0; i < 8; i++) {
+-    ivec3 offset = ivec3(i, i >> 1, i >> 2) & ivec3(1);
+-    vec3 cell_cos = clamp(localpos_floored + vec3(offset), vec3(0.0), vec3(gd.g_resolution) - 1.0);
+-
+-    /* Keep in sync with update_irradiance_probe */
+-    ivec3 icell_cos = ivec3(gd.g_level_bias * floor(cell_cos / gd.g_level_bias));
+-    int cell = gd.g_offset + icell_cos.z + icell_cos.y * gd.g_resolution.z +
+-               icell_cos.x * gd.g_resolution.z * gd.g_resolution.y;
+-
+-    vec3 color = irradiance_from_cell_get(cell, N);
+-
+-    /* We need this because we render probes in world space (so we need light vector in WS).
+-     * And rendering them in local probe space is too much problem. */
+-    vec3 ws_cell_location = gd.g_corner +
+-                            (gd.g_increment_x * cell_cos.x + gd.g_increment_y * cell_cos.y +
+-                             gd.g_increment_z * cell_cos.z);
+-
+-    vec3 ws_point_to_cell = ws_cell_location - P;
+-    float ws_dist_point_to_cell = length(ws_point_to_cell);
+-    vec3 ws_light = ws_point_to_cell / ws_dist_point_to_cell;
+-
+-    /* Smooth back-face test. */
+-    float weight = saturate(dot(ws_light, N));
+-
+-    /* Precomputed visibility */
+-    weight *= load_visibility_cell(
+-        cell, ws_light, ws_dist_point_to_cell, gd.g_vis_bias, gd.g_vis_bleed, gd.g_vis_range);
+-
+-    /* Smoother transition */
+-    weight += prbIrradianceSmooth;
+-
+-    /* Trilinear weights */
+-    vec3 trilinear = mix(1.0 - trilinear_weight, trilinear_weight, vec3(offset));
+-    weight *= trilinear.x * trilinear.y * trilinear.z;
+-
+-    /* Avoid zero weight */
+-    weight = max(0.00001, weight);
+-
+-    weight_accum += weight;
+-    irradiance_accum += color * weight;
+-  }
+-
+-  return irradiance_accum / weight_accum;
+-}
+-
+-vec3 probe_evaluate_world_diff(vec3 N)
+-{
+-  if (prbNumRenderGrid == 0) {
+-    return vec3(0);
+-  }
+-  return irradiance_from_cell_get(0, N);
+-}
++
++#pragma BLENDER_REQUIRE(engine_eevee_legacy_shared.h)
++#pragma BLENDER_REQUIRE(common_math_geom_lib.glsl)
++#pragma BLENDER_REQUIRE(common_view_lib.glsl)
++#pragma BLENDER_REQUIRE(common_utiltex_lib.glsl)
++#pragma BLENDER_REQUIRE(common_uniforms_lib.glsl)
++#pragma BLENDER_REQUIRE(cubemap_lib.glsl)
++#pragma BLENDER_REQUIRE(ambient_occlusion_lib.glsl)
++#pragma BLENDER_REQUIRE(irradiance_lib.glsl)
++
++/* ----------- Uniforms --------- */
++
++#if !defined(USE_GPU_SHADER_CREATE_INFO)
++
++uniform sampler2DArray probePlanars;
++uniform samplerCubeArray probeCubes;
++
++#endif
++
++/* ----------- Structures --------- */
++
++#define PROBE_PARALLAX_BOX 1.0
++#define PROBE_ATTENUATION_BOX 1.0
++
++#define p_position position_type.xyz
++#define p_parallax_type position_type.w
++#define p_atten_fac attenuation_fac_type.x
++#define p_atten_type attenuation_fac_type.y
++
++#define pl_plane_eq plane_equation
++#define pl_normal plane_equation.xyz
++#define pl_facing_scale facing_scale_bias.x
++#define pl_facing_bias facing_scale_bias.y
++#define pl_fade_scale clip_vec_x_fade_scale.w
++#define pl_fade_bias clip_vec_y_fade_bias.w
++#define pl_clip_pos_x clip_vec_x_fade_scale.xyz
++#define pl_clip_pos_y clip_vec_y_fade_bias.xyz
++#define pl_clip_edges clip_edges
++
++#define g_corner ws_corner_atten_scale.xyz
++#define g_atten_scale ws_corner_atten_scale.w
++#define g_atten_bias ws_increment_x_atten_bias.w
++#define g_level_bias ws_increment_y_lvl_bias.w
++#define g_increment_x ws_increment_x_atten_bias.xyz
++#define g_increment_y ws_increment_y_lvl_bias.xyz
++#define g_increment_z ws_increment_z.xyz
++#define g_resolution resolution_offset.xyz
++#define g_offset resolution_offset.w
++#define g_vis_bias vis_bias_bleed_range.x
++#define g_vis_bleed vis_bias_bleed_range.y
++#define g_vis_range vis_bias_bleed_range.z
++
++#ifndef MAX_PROBE
++#  define MAX_PROBE 1
++#endif
++#ifndef MAX_GRID
++#  define MAX_GRID 1
++#endif
++#ifndef MAX_PLANAR
++#  define MAX_PLANAR 1
++#endif
++
++#if !defined(USE_GPU_SHADER_CREATE_INFO)
++
++layout(std140) uniform probe_block
++{
++  ProbeBlock _probe_block;
++};
++
++layout(std140) uniform grid_block
++{
++  GridBlock _grid_block;
++};
++
++layout(std140) uniform planar_block
++{
++  PlanarBlock _planar_block;
++};
++
++#  define probes_data _probe_block.probes_data
++#  define grids_data _grid_block.grids_data
++#  define planars_data _planar_block.planars_data
++
++#endif
++/* ----------- Functions --------- */
++
++float probe_attenuation_cube(int pd_id, vec3 P)
++{
++  vec3 localpos = transform_point(probes_data[pd_id].influencemat, P);
++
++  float probe_atten_fac = probes_data[pd_id].p_atten_fac;
++  float fac;
++  if (probes_data[pd_id].p_atten_type == PROBE_ATTENUATION_BOX) {
++    vec3 axes_fac = saturate(probe_atten_fac - probe_atten_fac * abs(localpos));
++    fac = min_v3(axes_fac);
++  }
++  else {
++    fac = saturate(probe_atten_fac - probe_atten_fac * length(localpos));
++  }
++
++  return fac;
++}
++
++float probe_attenuation_planar(PlanarData pd, vec3 P)
++{
++  /* Distance from plane */
++  float fac = saturate(abs(dot(pd.pl_plane_eq, vec4(P, 1.0))) * pd.pl_fade_scale +
++                       pd.pl_fade_bias);
++  /* Fancy fast clipping calculation */
++  vec2 dist_to_clip;
++  dist_to_clip.x = dot(pd.pl_clip_pos_x, P);
++  dist_to_clip.y = dot(pd.pl_clip_pos_y, P);
++  /* compare and add all tests */
++  fac *= step(2.0, dot(step(pd.pl_clip_edges, dist_to_clip.xxyy), vec2(-1.0, 1.0).xyxy));
++  return fac;
++}
++
++float probe_attenuation_planar_normal_roughness(PlanarData pd, vec3 N, float roughness)
++{
++  /* Normal Facing */
++  float fac = saturate(dot(pd.pl_normal, N) * pd.pl_facing_scale + pd.pl_facing_bias);
++  /* Decrease influence for high roughness */
++  return fac * saturate(1.0 - roughness * 10.0);
++}
++
++float probe_attenuation_grid(GridData gd, vec3 P, out vec3 localpos)
++{
++  localpos = transform_point(gd.localmat, P);
++  vec3 pos_to_edge = max(vec3(0.0), abs(localpos) - 1.0);
++  float fade = length(pos_to_edge);
++  return saturate(-fade * gd.g_atten_scale + gd.g_atten_bias);
++}
++
++vec3 probe_evaluate_cube(int pd_id, vec3 P, vec3 R, float roughness)
++{
++  /* Correct reflection ray using parallax volume intersection. */
++  vec3 localpos = transform_point(probes_data[pd_id].parallaxmat, P);
++  vec3 localray = transform_direction(probes_data[pd_id].parallaxmat, R);
++
++  float dist;
++  if (probes_data[pd_id].p_parallax_type == PROBE_PARALLAX_BOX) {
++    dist = line_unit_box_intersect_dist(localpos, localray);
++  }
++  else {
++    dist = line_unit_sphere_intersect_dist(localpos, localray);
++  }
++
++  /* Use Distance in WS directly to recover intersection */
++  vec3 intersection = P + R * dist - probes_data[pd_id].p_position;
++
++  /* From Frostbite PBR Course
++   * Distance based roughness
++   * http://www.frostbite.com/wp-content/uploads/2014/11/course_notes_moving_frostbite_to_pbr.pdf
++   */
++  float original_roughness = roughness;
++  float linear_roughness = fast_sqrt(roughness);
++  float distance_roughness = saturate(dist * linear_roughness / length(intersection));
++  linear_roughness = mix(distance_roughness, linear_roughness, linear_roughness);
++  roughness = linear_roughness * linear_roughness;
++
++  float fac = saturate(original_roughness * 2.0 - 1.0);
++  R = mix(intersection, R, fac * fac);
++
++  float lod = linear_roughness * prbLodCubeMax;
++  return textureLod_cubemapArray(probeCubes, vec4(R, float(pd_id)), lod).rgb;
++}
++
++vec3 probe_evaluate_world_spec(vec3 R, float roughness)
++{
++  float lod = fast_sqrt(roughness) * prbLodCubeMax;
++  return textureLod_cubemapArray(probeCubes, vec4(R, 0.0), lod).rgb;
++}
++
++vec3 probe_evaluate_cube_diffuse_trace(int pd_id, vec3 P, vec3 R)
++{
++  /* Correct reflection ray using parallax volume intersection. */
++  vec3 localpos = transform_point(probes_data[pd_id].parallaxmat, P);
++  vec3 localray = transform_direction(probes_data[pd_id].parallaxmat, R);
++
++  // float dist;
++  // if (probes_data[pd_id].p_parallax_type == PROBE_PARALLAX_BOX) {
++  //   dist = line_unit_box_intersect_dist(localpos, localray);
++  // }
++  // else {
++  //   dist = line_unit_sphere_intersect_dist(localpos, localray);
++  // }
++
++  float lod = prbLodCubeMax;
++  return textureLod_cubemapArray(probeCubes, vec4(R, float(pd_id)), prbLodCubeMax).rgb;
++}
++
++vec3 probe_evaluate_world_cubemap_ssgi(vec3 R)
++{
++  return textureLod_cubemapArray(probeCubes, vec4(R, 0.0), prbLodCubeMax).rgb;
++}
++
++vec3 probe_evaluate_planar(int id, PlanarData pd, vec3 P, vec3 N, vec3 V, float roughness)
++{
++  /* Find view vector / reflection plane intersection. */
++  vec3 point_on_plane = line_plane_intersect(P, V, pd.pl_plane_eq);
++
++  /* How far the pixel is from the plane. */
++  float ref_depth = 1.0; /* TODO: parameter. */
++
++  /* Compute distorded reflection vector based on the distance to the reflected object.
++   * In other words find intersection between reflection vector and the sphere center
++   * around point_on_plane. */
++  vec3 proj_ref = reflect(reflect(-V, N) * ref_depth, pd.pl_normal);
++
++  /* Final point in world space. */
++  vec3 ref_pos = point_on_plane + proj_ref;
++
++  /* Reproject to find texture coords. */
++  vec4 refco = ProjectionMatrix * (ViewMatrix * vec4(ref_pos, 1.0));
++  refco.xy /= refco.w;
++
++  /* TODO: If we support non-SSR planar reflection, we should blur them with gaussian
++   * and chose the right mip depending on the cone footprint after projection */
++  /* NOTE: X is inverted here to compensate inverted drawing. */
++  vec3 radiance = textureLod(probePlanars, vec3(refco.xy * vec2(-0.5, 0.5) + 0.5, id), 0.0).rgb;
++
++  return radiance;
++}
++
++void fallback_cubemap(vec3 N,
++                      vec3 V,
++                      vec3 P,
++                      vec3 vP,
++                      float roughness,
++                      float roughnessSquared,
++                      inout vec4 spec_accum)
++{
++  /* Specular probes */
++  vec3 spec_dir = specular_dominant_dir(N, V, roughnessSquared);
++
++  OcclusionData occlusion_data = occlusion_load(vP, 1.0);
++  float final_ao = specular_occlusion(occlusion_data, V, N, roughness, spec_dir);
++
++  /* Starts at 1 because 0 is world probe */
++  for (int i = 1; i < MAX_PROBE && i < prbNumRenderCube && spec_accum.a < 0.999; i++) {
++    float fade = probe_attenuation_cube(i, P);
++
++    if (fade > 0.0) {
++      vec3 spec = final_ao * probe_evaluate_cube(i, P, spec_dir, roughness);
++      accumulate_light(spec, fade, spec_accum);
++    }
++  }
++
++  /* World Specular */
++  if (spec_accum.a < 0.999) {
++    vec3 spec = final_ao * probe_evaluate_world_spec(spec_dir, roughness);
++    accumulate_light(spec, 1.0, spec_accum);
++  }
++}
++
++
++void fallback_cubemap_ssgi(vec3 N,
++                      vec3 P,
++                      inout vec4 spec_accum)
++{
++  /* Specular probes */
++
++  /* Starts at 1 because 0 is world probe */
++/*   for (int i = 1; i < MAX_PROBE && i < prbNumRenderCube && spec_accum.a < 0.999; i++) {
++    float fade = 1.0;
++    //fade = probe_attenuation_cube(i, P);
++
++    if (fade > 0.0) {
++      //vec3 spec = probe_evaluate_cube_diffuse_trace(i, P, N);
++      vec3 spec = textureLod_cubemapArray(probeCubes, vec4(N, float(i)), prbLodCubeMax).rgb;
++      accumulate_light(spec, fade, spec_accum);
++    }
++  } */
++
++  /* World Specular */
++  if (spec_accum.a < 0.999) {
++    vec3 spec = textureLod_cubemapArray(probeCubes, vec4(N, 0.0), prbLodCubeMax).rgb; //vec3 spec = textureLod_cubemapArray(probeCubes, vec4(N, ssrDiffuseDebugA), prbLodCubeMax).rgb;
++    accumulate_light(spec, 1.0, spec_accum);
++  }
++}
++
++vec3 probe_evaluate_grid(GridData gd, vec3 P, vec3 N, vec3 localpos)
++{
++  localpos = localpos * 0.5 + 0.5;
++  localpos = localpos * vec3(gd.g_resolution) - 0.5;
++
++  vec3 localpos_floored = floor(localpos);
++  vec3 trilinear_weight = fract(localpos);
++
++  float weight_accum = 0.0;
++  vec3 irradiance_accum = vec3(0.0);
++
++  /* For each neighbor cells */
++  for (int i = 0; i < 8; i++) {
++    ivec3 offset = ivec3(i, i >> 1, i >> 2) & ivec3(1);
++    vec3 cell_cos = clamp(localpos_floored + vec3(offset), vec3(0.0), vec3(gd.g_resolution) - 1.0);
++
++    /* Keep in sync with update_irradiance_probe */
++    ivec3 icell_cos = ivec3(gd.g_level_bias * floor(cell_cos / gd.g_level_bias));
++    int cell = gd.g_offset + icell_cos.z + icell_cos.y * gd.g_resolution.z +
++               icell_cos.x * gd.g_resolution.z * gd.g_resolution.y;
++
++    vec3 color = irradiance_from_cell_get(cell, N);
++
++    /* We need this because we render probes in world space (so we need light vector in WS).
++     * And rendering them in local probe space is too much problem. */
++    vec3 ws_cell_location = gd.g_corner +
++                            (gd.g_increment_x * cell_cos.x + gd.g_increment_y * cell_cos.y +
++                             gd.g_increment_z * cell_cos.z);
++
++    vec3 ws_point_to_cell = ws_cell_location - P;
++    float ws_dist_point_to_cell = length(ws_point_to_cell);
++    vec3 ws_light = ws_point_to_cell / ws_dist_point_to_cell;
++
++    /* Smooth back-face test. */
++    float weight = saturate(dot(ws_light, N));
++
++    /* Precomputed visibility */
++    weight *= load_visibility_cell(
++        cell, ws_light, ws_dist_point_to_cell, gd.g_vis_bias, gd.g_vis_bleed, gd.g_vis_range);
++
++    /* Smoother transition */
++    weight += prbIrradianceSmooth;
++
++    /* Trilinear weights */
++    vec3 trilinear = mix(1.0 - trilinear_weight, trilinear_weight, vec3(offset));
++    weight *= trilinear.x * trilinear.y * trilinear.z;
++
++    /* Avoid zero weight */
++    weight = max(0.00001, weight);
++
++    weight_accum += weight;
++    irradiance_accum += color * weight;
++  }
++
++  return irradiance_accum / weight_accum;
++}
++
++vec3 probe_evaluate_world_diff(vec3 N)
++{
++  if (prbNumRenderGrid == 0) {
++    return vec3(0);
++  }
++  return irradiance_from_cell_get(0, N);
++}
++
++vec3 evaluate_diffuse_probe_ssgi(vec3 N) //TODO: routine for probe selection
++{
++  if (prbNumRenderGrid == 0) {
++    return vec3(0);
++  }
++  return irradiance_from_cell_get(0, N);
++}
+\ No newline at end of file
+diff --git a/source/blender/draw/engines/eevee/shaders/raytrace_lib.glsl b/source/blender/draw/engines/eevee/shaders/raytrace_lib.glsl
+index b9171ca2..4e13043a 100644
+--- a/source/blender/draw/engines/eevee/shaders/raytrace_lib.glsl
++++ b/source/blender/draw/engines/eevee/shaders/raytrace_lib.glsl
+@@ -2,6 +2,7 @@
+ #pragma BLENDER_REQUIRE(common_view_lib.glsl)
+ #pragma BLENDER_REQUIRE(common_math_lib.glsl)
+ #pragma BLENDER_REQUIRE(common_uniforms_lib.glsl)
++/*TODO Add separate func and backport?*/
+ 
+ /* Fix for #104266 wherein AMD GPUs running Metal erroneously discard a successful hit. */
+ #if defined(GPU_METAL) && defined(GPU_ATI)
+diff --git a/source/blender/draw/engines/eevee/shaders/surface_frag.glsl b/source/blender/draw/engines/eevee/shaders/surface_frag.glsl
+index e5fb19c9..fde2a9fd 100644
+--- a/source/blender/draw/engines/eevee/shaders/surface_frag.glsl
++++ b/source/blender/draw/engines/eevee/shaders/surface_frag.glsl
+@@ -102,6 +102,7 @@ void main()
+   outRadiance = vec4(cl.radiance, holdout);
+   ssrNormals = normal_encode(normalize(mat3(ViewMatrix) * out_ssr_N), vec3(0.0));
+   ssrData = vec4(out_ssr_color, out_ssr_roughness);
++  ssgiInput = cl.ssgimix;
+   sssIrradiance = out_sss_radiance;
+   sssRadius = out_sss_radius;
+   sssAlbedo = out_sss_color;
+@@ -125,6 +126,7 @@ void main()
+   outRadiance.rgb *= alpha_div;
+   ssrData.rgb *= alpha_div;
+   sssAlbedo.rgb *= alpha_div;
++  ssgiInput.rgb *= alpha_div;
+ 
+   if (renderPassAOV) {
+     if (aov_is_valid) {
+diff --git a/source/blender/draw/engines/eevee_next/shaders/eevee_nodetree_lib.glsl b/source/blender/draw/engines/eevee_next/shaders/eevee_nodetree_lib.glsl
+index ea371885..7d285c8e 100644
+--- a/source/blender/draw/engines/eevee_next/shaders/eevee_nodetree_lib.glsl
++++ b/source/blender/draw/engines/eevee_next/shaders/eevee_nodetree_lib.glsl
+@@ -206,6 +206,7 @@ float ambient_occlusion_eval(vec3 normal,
+   /* TODO */
+   return 1.0;
+ }
++/* TODO correct zbuffer out func */
+ 
+ #ifndef GPU_METAL
+ void attrib_load();
+diff --git a/source/blender/draw/intern/shaders/common_colorpacking_lib.glsl b/source/blender/draw/intern/shaders/common_colorpacking_lib.glsl
+new file mode 100644
+index 00000000..981ec1cd
+--- /dev/null
++++ b/source/blender/draw/intern/shaders/common_colorpacking_lib.glsl
+@@ -0,0 +1,71 @@
++/*****************************************/ /* TODO - rename */
++/* 2 component packing */
++/* http://emmettmcquinn.com/blog/graphics/2012/11/07/float-packing.html */
++
++/* currently unused - no longer channel packing SSR and SSGI input data */
++const float c_precision = 4096.0; //4096 (12bit * 2) // 65536
++//const float c_precision = 65536.0;
++const float c_precisionp1 = c_precision + 1.0;
++const float range = 0.5; //Disabling for temporariy banding fix
++const float range_inverse = 2;
++
++vec4 packVec4(vec4 color_a, vec4 color_b) {
++	vec4 packed_color = vec4(0.0);
++	/* Clamp inputs*/
++	color_a *= range;
++	color_a = clamp(color_a, 0.0, 1.0);
++    color_b *= range;
++    color_b = clamp(color_b, 0.0, 1.0);
++	/* Pack RGBA */
++	packed_color.r = floor(color_a.r * c_precision + 0.5) + floor(color_b.r * c_precision + 0.5) * c_precisionp1;
++    packed_color.g = floor(color_a.g * c_precision + 0.5) + floor(color_b.g * c_precision + 0.5) * c_precisionp1;
++    packed_color.b = floor(color_a.b * c_precision + 0.5) + floor(color_b.b * c_precision + 0.5) * c_precisionp1;
++    packed_color.a = floor(color_a.a * c_precision + 0.5) + floor(color_b.a * c_precision + 0.5) * c_precisionp1;
++
++    return packed_color.rgba;
++}
++
++vec3 packVec3(vec3 color_a, vec3 color_b) {
++	vec3 packed_color = vec3(0.0);
++	/* Clamp inputs*/
++	color_a *= range;
++	color_a = clamp(color_a, 0.0, 1.0);
++    color_b *= range;
++    color_b = clamp(color_b, 0.0, 1.0);
++	/* Pack RGB */
++	packed_color.r = floor(color_a.r * c_precision + 0.5) + floor(color_b.r * c_precision + 0.5) * c_precisionp1;
++    packed_color.g = floor(color_a.g * c_precision + 0.5) + floor(color_b.g * c_precision + 0.5) * c_precisionp1;
++    packed_color.b = floor(color_a.b * c_precision + 0.5) + floor(color_b.b * c_precision + 0.5) * c_precisionp1;
++
++    return packed_color.rgb;
++}
++
++float packFloat(float color_a, float color_b) {
++	float packed_color = 0.0;
++	/* Clamp inputs*/
++	color_a *= range;
++	color_a = clamp(color_a, 0.0, 1.0);
++    color_b *= range;
++    color_b = clamp(color_b, 0.0, 1.0);
++	/* Pack float */
++	packed_color = floor(color_a * c_precision + 0.5) + floor(color_b * c_precision + 0.5) * c_precisionp1;
++
++    return packed_color;
++}
++
++vec4 unpackVec4(vec4 packedColor, out vec4 color_a, out vec4 color_b){
++	vec4 color;
++	color_a.r = mod(packedColor.r, c_precisionp1) / c_precision;
++	color_b.r = mod(floor(packedColor.r / c_precisionp1), c_precisionp1) / c_precision;
++    color_a.g = mod(packedColor.g, c_precisionp1) / c_precision;
++	color_b.g = mod(floor(packedColor.g / c_precisionp1), c_precisionp1) / c_precision;
++    color_a.b = mod(packedColor.b, c_precisionp1) / c_precision;
++	color_b.b = mod(floor(packedColor.b / c_precisionp1), c_precisionp1) / c_precision;
++    color_a.a = mod(packedColor.a, c_precisionp1) / c_precision;
++	color_b.a = mod(floor(packedColor.a / c_precisionp1), c_precisionp1) / c_precision;
++	/* Restore range */
++	color_a *= range_inverse;
++	color_b *= range_inverse;
++
++	return vec4(0.0);
++}
+\ No newline at end of file
+diff --git a/source/blender/gpu/shaders/material/gpu_shader_material_ambient_occlusion.glsl b/source/blender/gpu/shaders/material/gpu_shader_material_ambient_occlusion.glsl
+index 4ba1f6f7..fffe5f32 100644
+--- a/source/blender/gpu/shaders/material/gpu_shader_material_ambient_occlusion.glsl
++++ b/source/blender/gpu/shaders/material/gpu_shader_material_ambient_occlusion.glsl
+@@ -1,12 +1,28 @@
++/* don't do this here - should be in lib */
++float map(float value, float min1, float max1, float min2, float max2) {
++  return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
++}
+ 
+ void node_ambient_occlusion(vec4 color,
+                             float dist,
+                             vec3 normal,
++                            float softness,
+                             const float inverted,
+                             const float sample_count,
+                             out vec4 result_color,
+-                            out float result_ao)
++                            out float result_ao,
++                            out float outdifference)
+ {
+   result_ao = ambient_occlusion_eval(normal, dist, inverted, sample_count);
+   result_color = result_ao * color;
++  /* get depth data */
++  vec3 vP = transform_point(ViewMatrix, g_data.P);
++  float shadingdepth = abs(-vP.z);
++  float zbuffer = abs(ambient_occlusion_depth());
++  /* difference softness control */
++  softness += 0.00001;
++  shadingdepth = map(shadingdepth, 0.0, softness, 0.0, 1.0);
++  zbuffer = map(zbuffer, 0.0, softness, 0.0, 1.0);
++  /* out */
++  outdifference = clamp(zbuffer - shadingdepth, 0.0, 1.0);
+ }
+diff --git a/source/blender/gpu/shaders/material/gpu_shader_material_camera.glsl b/source/blender/gpu/shaders/material/gpu_shader_material_camera.glsl
+index b1a29833..42c4fbdf 100644
+--- a/source/blender/gpu/shaders/material/gpu_shader_material_camera.glsl
++++ b/source/blender/gpu/shaders/material/gpu_shader_material_camera.glsl
+@@ -1,8 +1,16 @@
+ void camera(out vec3 outview, out float outdepth, out float outdist)
++//void camera(out vec3 outview, out float outdepth, out float outdist, out float outdifference)
+ {
+   vec3 vP = transform_point(ViewMatrix, g_data.P);
+   vP.z = -vP.z;
+   outdepth = abs(vP.z);
+   outdist = length(vP);
+   outview = normalize(vP);
++
++  /*---- todo redo zbuffer output depth - clean method broken on codegen refractor ----- */
++  /* add data via GPU_link or do it on it's own node */ 
++
++  //outdifference = ambient_occlusion_depth();
++  
++  /* todo calculate difference between shading point and zbuffer and output the difference only */
+ }
+diff --git a/source/blender/makesdna/DNA_scene_defaults.h b/source/blender/makesdna/DNA_scene_defaults.h
+index a28054e9..b99bdb38 100644
+--- a/source/blender/makesdna/DNA_scene_defaults.h
++++ b/source/blender/makesdna/DNA_scene_defaults.h
+@@ -181,6 +181,27 @@
+     .ssr_thickness = 0.2f, \
+     .ssr_border_fade = 0.075f, \
+     .ssr_firefly_fac = 10.0f, \
++    .ssr_diffuse_versioning = 1.161f, \
++    .ssr_diffuse_intensity = 1.0f, \
++    .ssr_diffuse_thickness = 1.0f, \
++    .ssr_diffuse_resolve_bias = 0.1f, \
++    .ssr_diffuse_quality = 0.25f, \
++    .ssr_diffuse_clamp = 1.0f, \
++    .ssr_diffuse_ao = 1.0f, \
++    .ssr_diffuse_ao_limit = 0.25f, \
++    .ssr_diffuse_probe_trace = 0, \
++    .ssr_diffuse_probe_intensity = 1.0, \
++    .ssr_diffuse_probe_clamp = 1.0, \
++    .ssr_diffuse_filter = 1.0f, \
++    .ssr_diffuse_fsize = 16.0f, \
++    .ssr_diffuse_fsamples = 1, \
++    .ssr_diffuse_fnweight = 1.0f, \
++    .ssr_diffuse_fdweight = 1.0f, \
++    .ssr_diffuse_faoweight = 0.75f, \
++    .ssr_diffuse_debug_a = 1.0f, \
++    .ssr_diffuse_debug_b = 1.0f, \
++    .ssr_diffuse_debug_c = 1.0f, \
++    .ssr_diffuse_debug_d = 1.0f, \
+  \
+     .volumetric_start = 0.1f, \
+     .volumetric_end = 100.0f, \
+diff --git a/source/blender/makesdna/DNA_scene_types.h b/source/blender/makesdna/DNA_scene_types.h
+index e54b7002..a25912cd 100644
+--- a/source/blender/makesdna/DNA_scene_types.h
++++ b/source/blender/makesdna/DNA_scene_types.h
+@@ -1805,6 +1805,27 @@ typedef struct SceneEEVEE {
+   float ssr_thickness;
+   float ssr_border_fade;
+   float ssr_firefly_fac;
++  float ssr_diffuse_versioning;
++  float ssr_diffuse_intensity;
++  float ssr_diffuse_thickness;
++  float ssr_diffuse_resolve_bias;
++  float ssr_diffuse_quality;
++  float ssr_diffuse_clamp;
++  float ssr_diffuse_ao;
++  float ssr_diffuse_ao_limit;
++  int ssr_diffuse_probe_trace;
++  float ssr_diffuse_probe_intensity;
++  float ssr_diffuse_probe_clamp;
++  float ssr_diffuse_filter;
++  float ssr_diffuse_fsize;
++  int ssr_diffuse_fsamples;
++  float ssr_diffuse_fnweight;
++  float ssr_diffuse_fdweight;
++  float ssr_diffuse_faoweight;
++  float ssr_diffuse_debug_a;
++  float ssr_diffuse_debug_b;
++  float ssr_diffuse_debug_c;
++  float ssr_diffuse_debug_d;
+ 
+   float volumetric_start;
+   float volumetric_end;
+@@ -1842,7 +1863,7 @@ typedef struct SceneEEVEE {
+   int shadow_cube_size;
+   int shadow_cascade_size;
+   int shadow_pool_size;
+-  char _pad[4];
++  //char _pad[4];
+ 
+   struct LightCache *light_cache DNA_DEPRECATED;
+   struct LightCache *light_cache_data;
+@@ -2709,6 +2730,7 @@ enum {
+   SCE_EEVEE_DOF_HQ_SLIGHT_FOCUS = (1 << 22),
+   SCE_EEVEE_DOF_JITTER = (1 << 23),
+   SCE_EEVEE_SHADOW_ENABLED = (1 << 24),
++  SCE_EEVEE_PROBE_TRACE = (1 << 25),
+ };
+ 
+ /** #SceneEEVEE.shadow_method */
+diff --git a/source/blender/makesrna/intern/rna_scene.c b/source/blender/makesrna/intern/rna_scene.c
+index 90520797..3505e73a 100644
+--- a/source/blender/makesrna/intern/rna_scene.c
++++ b/source/blender/makesrna/intern/rna_scene.c
+@@ -7586,6 +7586,142 @@ static void rna_def_scene_eevee(BlenderRNA *brna)
+   RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
+   RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
+ 
++  prop = RNA_def_property(srna, "ssr_diffuse_versioning", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Versioning", "Set settings to defaults if version number is lower than defined");
++  RNA_def_property_range(prop, 0.0f, 10.0f);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_intensity", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Intensity", "Diffuse bounce light intensity - 0.0 disables all diffuse tracing and resolve in shader");
++  RNA_def_property_range(prop, 0.0f, FLT_MAX);
++  RNA_def_property_ui_range(prop, 0.0f, 1.0f, 0.1f, 2);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_thickness", PROP_FLOAT, PROP_DISTANCE);
++  RNA_def_property_ui_text(prop, "Thickness", "Pixel thickness used to detect intersection for diffuse bounce");
++  RNA_def_property_range(prop, 0.0f, FLT_MAX);
++  RNA_def_property_ui_range(prop, 0.0f, 3.0f, 5, 3);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_resolve_bias", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Resolve Bias", "Diffuse resolve bias - Higher values blur ray hit color sample, potentially reducing noise at the cost of accuracy. Can introduce noticable light bleeding.");
++  RNA_def_property_range(prop, 0.0f, 1.0f);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_quality", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Ray Length", "Diffuse trace ray stride length");
++  RNA_def_property_range(prop, 0.0f, 1.0f);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_clamp", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Clamp", "Firefly filter for diffuse resolve");
++  RNA_def_property_range(prop, 0.0f, FLT_MAX);
++  RNA_def_property_ui_range(prop, 0.0f, 1.0f, 5, 3);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_ao", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Occlusion", "Multiply SSGI output with AO");
++  RNA_def_property_range(prop, 0.0f, 1.0f);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_ao_limit", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Occlusion Limit", "Clamps multiplied AO lower values to avoid pitch black areas");
++  RNA_def_property_range(prop, 0.0f, 1.0f);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_filter", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Denoise Mix", "Mixes raw SSGI output with denoised output");
++  RNA_def_property_range(prop, 0.0f, 1.0f);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_fsize", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Filter Size", "Denoise filter kernel size");
++  RNA_def_property_range(prop, 0.0f, FLT_MAX);
++  RNA_def_property_ui_range(prop, 0.0f, 32.0f, 5, 3);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_fsamples", PROP_BOOLEAN, PROP_NONE);
++  RNA_def_property_ui_text(prop, "Skip Denoising on first sample", "Skips denoising on viewport movement");
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_fnweight", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Filter Normal Weight", "Filter normal weight");
++  RNA_def_property_range(prop, 0.0f, FLT_MAX);
++  RNA_def_property_ui_range(prop, 0.0, 1.0f, 5, 3);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_fdweight", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Filter Depth Weight", "Filter depth weight");
++  RNA_def_property_range(prop, 0.0f, FLT_MAX);
++  RNA_def_property_ui_range(prop, 0.0f, 1.0f, 5, 3);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_faoweight", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Filter AO Weight", "Filter AO weight");
++  RNA_def_property_range(prop, 0.0f, FLT_MAX);
++  RNA_def_property_ui_range(prop, 0.0f, 1.0f, 5, 3);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_probe_trace", PROP_BOOLEAN, PROP_NONE);
++  RNA_def_property_ui_text(prop, "Enable Probe tracing (Experimental)", "Replaces probe lighting contribution with SSGI traced probes");
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++
++  prop = RNA_def_property(srna, "ssr_diffuse_probe_intensity", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Injected Probe GI intensity", "GI intensity from injected probes");
++  RNA_def_property_range(prop, 0.0f, FLT_MAX);
++  RNA_def_property_ui_range(prop, 0.0f, 1.0f, 5, 3);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_probe_clamp", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Injected Probe Clamp", "Clamps injected probes to remove noise at the cost of contrast");
++  RNA_def_property_range(prop, 0.0f, FLT_MAX);
++  RNA_def_property_ui_range(prop, 0.0f, 1.0f, 5, 3);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_debug_a", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Debug A", "");
++  RNA_def_property_range(prop, 0.0f, FLT_MAX);
++  RNA_def_property_ui_range(prop, 0.0f, 5.0f, 5, 3);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_debug_b", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Debug B", "");
++  RNA_def_property_range(prop, 0.0f, FLT_MAX);
++  RNA_def_property_ui_range(prop, 0.0f, 5.0f, 5, 3);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_debug_c", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Debug C", "");
++  RNA_def_property_range(prop, 0.0f, FLT_MAX);
++  RNA_def_property_ui_range(prop, 0.0f, 5.0f, 5, 3);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
++
++  prop = RNA_def_property(srna, "ssr_diffuse_debug_d", PROP_FLOAT, PROP_FACTOR);
++  RNA_def_property_ui_text(prop, "Debug D", "");
++  RNA_def_property_range(prop, 0.0f, FLT_MAX);
++  RNA_def_property_ui_range(prop, 0.0f, 5.0f, 5, 3);
++  RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
++  RNA_def_property_update(prop, NC_SCENE | ND_RENDER_OPTIONS, NULL);
+   /* Volumetrics */
+   prop = RNA_def_property(srna, "volumetric_start", PROP_FLOAT, PROP_DISTANCE);
+   RNA_def_property_ui_text(prop, "Start", "Start distance of the volumetric effect");
+diff --git a/source/blender/nodes/shader/nodes/node_shader_ambient_occlusion.cc b/source/blender/nodes/shader/nodes/node_shader_ambient_occlusion.cc
+index e9e37e19..2e7adcd4 100644
+--- a/source/blender/nodes/shader/nodes/node_shader_ambient_occlusion.cc
++++ b/source/blender/nodes/shader/nodes/node_shader_ambient_occlusion.cc
+@@ -13,8 +13,10 @@ static void node_declare(NodeDeclarationBuilder &b)
+   b.add_input<decl::Color>("Color").default_value({1.0f, 1.0f, 1.0f, 1.0f});
+   b.add_input<decl::Float>("Distance").default_value(1.0f).min(0.0f).max(1000.0f);
+   b.add_input<decl::Vector>("Normal").min(-1.0f).max(1.0f).hide_value();
++  b.add_input<decl::Float>("Alpha Depth Softness").default_value(1.0f).min(0.0f).max(1000.0f);
+   b.add_output<decl::Color>("Color");
+   b.add_output<decl::Float>("AO");
++  b.add_output<decl::Float>("Alpha Difference");
+ }
+ 
+ static void node_shader_buts_ambient_occlusion(uiLayout *layout, bContext * /*C*/, PointerRNA *ptr)
+diff --git a/source/blender/nodes/shader/nodes/node_shader_camera.cc b/source/blender/nodes/shader/nodes/node_shader_camera.cc
+index d8cc4fde..6b99a881 100644
+--- a/source/blender/nodes/shader/nodes/node_shader_camera.cc
++++ b/source/blender/nodes/shader/nodes/node_shader_camera.cc
+@@ -14,6 +14,7 @@ static void node_declare(NodeDeclarationBuilder &b)
+   b.add_output<decl::Vector>("View Vector");
+   b.add_output<decl::Float>("View Z Depth");
+   b.add_output<decl::Float>("View Distance");
++  //b.add_output<decl::Float>("Alpha Difference");
+ }
+ 
+ static int gpu_shader_camera(GPUMaterial *mat,
+-- 
+2.52.0.windows.1
+

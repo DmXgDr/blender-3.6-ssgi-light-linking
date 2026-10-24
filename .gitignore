@@ -1,0 +1,5 @@
+/build-output/
+/release/
+__pycache__/
+*.pyc
+*.pdb

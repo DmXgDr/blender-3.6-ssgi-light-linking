@@ -1,0 +1,116 @@
+diff -Naur orig/cmake/defaults/Packages.cmake external_usd/cmake/defaults/Packages.cmake
+--- orig/cmake/defaults/Packages.cmake	2022-10-27 12:56:33 -0600
++++ external_usd/cmake/defaults/Packages.cmake	2022-10-27 13:05:08 -0600
+@@ -129,7 +129,7 @@
+ endif()
+ 
+ # --TBB
+-find_package(TBB REQUIRED COMPONENTS tbb)
++find_package(TBB)
+ add_definitions(${TBB_DEFINITIONS})
+ 
+ # --math
+diff -Naur orig/cmake/defaults/msvcdefaults.cmake external_usd/cmake/defaults/msvcdefaults.cmake
+--- orig/cmake/defaults/msvcdefaults.cmake	2022-10-27 12:56:33 -0600
++++ external_usd/cmake/defaults/msvcdefaults.cmake	2022-10-27 13:05:08 -0600
+@@ -120,9 +120,6 @@
+ # for all translation units.
+ set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /bigobj")
+ 
+-# Enable PDB generation.
+-set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /Zi")
+-
+ # Enable multiprocessor builds.
+ set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /MP")
+ set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /Gm-")
+diff -Naur orig/pxr/base/arch/timing.h external_usd/pxr/base/arch/timing.h
+--- orig/pxr/base/arch/timing.h	2022-10-27 12:56:34 -0600
++++ external_usd/pxr/base/arch/timing.h	2022-10-27 13:05:08 -0600
+@@ -84,6 +84,10 @@
+ inline uint64_t
+ ArchGetStartTickTime()
+ {
++    // BLENDER: avoid using rdtsc instruction that is not supported on older CPUs.
++    return ArchGetTickTime();
++
++#if 0
+     uint64_t t;
+ #if defined (ARCH_OS_DARWIN)
+     return ArchGetTickTime();
+@@ -116,6 +120,7 @@
+ #error "Unsupported architecture."
+ #endif
+   return t;
++#endif
+ }
+ 
+ /// Get a "stop" tick time for measuring an interval of time.  See
+@@ -125,6 +130,10 @@
+ inline uint64_t
+ ArchGetStopTickTime()
+ {
++    // BLENDER: avoid using rdtsc instruction that is not supported on older CPUs.
++    return ArchGetTickTime();
++
++#if 0
+     uint64_t t;
+ #if defined (ARCH_OS_DARWIN)
+     return ArchGetTickTime();
+@@ -155,11 +164,11 @@
+ #error "Unsupported architecture."
+ #endif
+   return t;
++#endif
+ }
+ 
+-#if defined (doxygen) ||                                                       \
+-    (!defined(ARCH_OS_DARWIN) && defined(ARCH_CPU_INTEL) &&                    \
+-     (defined(ARCH_COMPILER_CLANG) || defined(ARCH_COMPILER_GCC)))
++// BLENDER: avoid using rdtsc instruction that is not supported on older CPUs.
++#if 0
+ 
+ /// A simple timer class for measuring an interval of time using the
+ /// ArchTickTimer facilities.
+diff -Naur orig/pxr/imaging/hioOpenVDB/CMakeLists.txt external_usd/pxr/imaging/hioOpenVDB/CMakeLists.txt
+--- orig/pxr/imaging/hioOpenVDB/CMakeLists.txt	2022-10-27 12:56:35 -0600
++++ external_usd/pxr/imaging/hioOpenVDB/CMakeLists.txt	2022-10-27 13:05:08 -0600
+@@ -20,6 +20,12 @@
+     LIST(APPEND __VDB_IMATH_LIBS ${OPENEXR_Half_LIBRARY})
+ endif()
+ 
++if (WIN32)
++    # OpenVDB uses constants from <cmath> that aren't available on
++    # Windows unless this is defined.
++    add_definitions(-D_USE_MATH_DEFINES)
++endif()
++
+ pxr_library(hioOpenVDB
+     LIBRARIES
+         ar
+diff -Naur orig/pxr/usdImaging/CMakeLists.txt external_usd/pxr/usdImaging/CMakeLists.txt
+--- orig/pxr/usdImaging/CMakeLists.txt	2022-10-27 12:56:37 -0600
++++ external_usd/pxr/usdImaging/CMakeLists.txt	2022-10-27 13:05:08 -0600
+@@ -7,7 +7,7 @@
+     usdVolImaging
+     usdAppUtils
+     usdviewq
+-    bin
++#    bin
+     plugin
+ )
+ 
+diff -Naur orig/cmake/macros/Private.cmake external_usd/cmake/macros/Private.cmake
+--- orig/cmake/macros/Private.cmake     2022-02-18 14:49:09 -0700
++++ external_usd/cmake/macros/Private.cmake     2022-08-05 10:42:03 -0600
+@@ -900,8 +900,10 @@
+         return()
+     endif()
+
+-    if (WIN32 AND PXR_USE_DEBUG_PYTHON)
++    if (WIN32 AND PXR_USE_DEBUG_PYTHON AND NOT CMAKE_DEBUG_POSTFIX)
+         # On Windows when compiling with debug python the library must be named with _d.
++        # Blender: but this can be skipped if CMAKE_DEBUG_POSTFIX is set, it knows
++        # what it is doing and we don't want libraries ending in _d_d.pyd 
+         set(LIBRARY_NAME "_${NAME}_d")
+     else()
+         set(LIBRARY_NAME "_${NAME}")

@@ -1,0 +1,19 @@
+{
+  "release": "R4",
+  "packaged_on": "2026-10-24",
+  "blender_version": "3.6.2",
+  "source_revision": "112f061a999ba8cbd021b59e09ce1db36762d787",
+  "upstream_revision": "e53e55951e7a81572d82d25f5d190fe5b130bdf3",
+  "ssgi_archive_revision": "931de149733bb8e471bfe000c5159bcea79406e8",
+  "dependencies_revision": "682da7fc9d72958e75d6e9dfd11f76ddacd03081",
+  "original_executable_sha256": "c98aa8686f009dd9fa65b03820ae1681954eee665e4c57025dbd8f907bc30a20",
+  "configuration": "standard Blender 3.6 user paths; no bundled local config directory",
+  "color_management": "Official Blender 3.6.2 OCIO configuration and LUTs",
+  "personal_profile_included": false,
+  "personal_projects_included": false,
+  "mcp_included": false,
+  "cycles_compiled": false,
+  "new_compositor_backport_included": false,
+  "distributed_executable_sha256": "e2f00af9830357fa9940ab854a5d4a521231c3c7bf39a5ab86a7e1a4aa92b0e2",
+  "ssgi_uninitialized_texture_fix": true
+}
